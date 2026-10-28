@@ -5,7 +5,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -64,7 +64,8 @@ td.rank{color:var(--muted);width:1%}
 .sorter[hidden]{display:none}
 .sorter .lbl{color:var(--muted)}
 .sorter .lvl{display:inline-flex;align-items:center;gap:2px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:2px}
-.sorter select{font:inherit;border:0;background:var(--card);color:var(--fg);padding:3px 4px;max-width:46vw}
+.sorter select,.sorter input{font:inherit;border:0;background:var(--card);color:var(--fg);padding:3px 4px;max-width:46vw}
+.sorter input{width:9em;border-bottom:1px solid var(--line)}
 .sorter button{font:inherit;border:0;background:var(--chip);color:var(--fg);border-radius:6px;padding:3px 8px;cursor:pointer;white-space:nowrap}
 .sorter button.rm{background:transparent;color:var(--muted);padding:3px 6px}
 .sorter button.add{background:transparent;border:1px dashed var(--line);color:var(--accent)}
@@ -75,21 +76,32 @@ footer{margin-top:28px;color:var(--muted);font-size:12px}
 FOOTER = ("<footer>EVE Online and the EVE logo are the registered trademarks of CCP hf. Alliance logos "
           "are © CCP hf. This site is not affiliated with or endorsed by CCP hf. or Twitch.</footer>")
 
-# Client-side multi-level sorting for ranking tables. The sort lives in the URL hash
-# (#sort=elo:d,points_bet:a) so sorted views can be shared, and is carried over to links
-# for the same view (other tournaments/stages) but not to views with different metrics.
+# Client-side multi-level sorting and filtering for tables. Both live in the URL hash
+# (#sort=elo:d,points_bet:a&filter=matches:ge:5) so views can be shared, and are carried over
+# to links for the same view (other tournaments/stages) but not to views with different metrics.
+# Metrics with "sort" appear in the sort menus; every metric can be filtered on.
 SORT_JS = r"""(() => {
-const table = document.querySelector("table.sortable"), box = document.querySelector(".sorter");
+const table = document.querySelector("table.sortable");
+const box = document.getElementById("sort"), fbox = document.getElementById("filter");
 const metrics = JSON.parse(document.getElementById("metrics").textContent);
 const byKey = Object.fromEntries(metrics.map(m => [m.key, m]));
+const sortable = metrics.filter(m => m.sort);
 const view = table.dataset.view, def = table.dataset.default, tie = table.dataset.tie;
-const parse = str => (str || "").split(",").map(x => x.split(":"))
-  .filter(([k], i, all) => byKey[k] && all.findIndex(([j]) => j === k) === i)
+const rows = [...table.tBodies[0].rows];
+const fromHash = name => (location.hash.match(new RegExp("[#&]" + name + "=([^&]*)")) || [])[1] || "";
+const parse = str => str.split(",").map(x => x.split(":"))
+  .filter(([k], i, all) => byKey[k] && byKey[k].sort && all.findIndex(([j]) => j === k) === i)
   .map(([key, d]) => ({key, dir: d === "a" ? "a" : "d"}));
-const fromHash = (location.hash.match(/sort=([^&]*)/) || [])[1];
-let state = parse(fromHash && decodeURIComponent(fromHash));
+let state = parse(decodeURIComponent(fromHash("sort")));
 if (!state.length) state = parse(def);
+const OPS = {ge: "≥", le: "≤", has: "contains", not: "doesn't contain"};
+const opsFor = m => m.text ? ["has", "not"] : ["ge", "le"];
+let filters = fromHash("filter").split(",").map(x => x.split(":"))
+  .filter(([k, op]) => byKey[k] && opsFor(byKey[k]).includes(op))
+  .map(([key, op, v]) => ({key, op, value: decodeURIComponent(v || "")}));
 const enc = () => state.map(s => s.key + ":" + s.dir).join(",");
+const encFilters = () => filters.filter(f => f.value.trim())
+  .map(f => f.key + ":" + f.op + ":" + encodeURIComponent(f.value.trim())).join(",");
 const get = (tr, k) => tr.getAttribute("data-" + k);
 const text = k => byKey[k] ? byKey[k].text : k === "team";
 function cmp(a, b) {
@@ -103,61 +115,131 @@ function cmp(a, b) {
   }
   return 0;
 }
+// The filter's value in the row attributes' units, or null to ignore the filter.
+function target(f) {
+  const m = byKey[f.key], v = f.value.trim();
+  if (!v) return null;
+  if (m.text) return v.toLowerCase();
+  if (m.fmt === "date") {
+    const t = Date.parse(v + "T00:00:00Z") / 1000;
+    return isNaN(t) ? null : f.op === "le" ? t + 86399 : t;  // "on or before" includes the day
+  }
+  const n = parseFloat(v.replace(/[,\s%+]/g, ""));
+  return isNaN(n) ? null : m.fmt === "pct" ? n / 100 : n;
+}
+function passes(tr) {
+  return filters.every(f => {
+    const t = target(f), x = get(tr, f.key);
+    if (t === null) return true;
+    if (text(f.key)) return x.toLowerCase().includes(t) === (f.op === "has");
+    if (x === "") return false;  // n/a never passes a number filter
+    return f.op === "ge" ? parseFloat(x) >= t : parseFloat(x) <= t;
+  });
+}
 function el(tag, props, text) {
   const e = Object.assign(document.createElement(tag), props);
   if (text !== undefined) e.textContent = text;
   return e;
 }
+const count = el("span", {className: "lbl"});
 function apply() {
-  const body = table.tBodies[0];
-  const renumber = "renumber" in table.dataset;
-  [...body.rows].sort(cmp).forEach((r, i) => { if (renumber) r.cells[0].textContent = i + 1; body.appendChild(r); });
-  const hash = enc() === def ? "" : "#sort=" + enc();
+  const body = table.tBodies[0], renumber = "renumber" in table.dataset;
+  let shown = 0;
+  rows.sort(cmp).forEach(r => {
+    r.hidden = !passes(r);
+    if (!r.hidden && ++shown && renumber) r.cells[0].textContent = shown;
+    body.appendChild(r);
+  });
+  count.textContent = encFilters() ? `${shown} of ${rows.length} shown` : "";
+  const parts = [enc() !== def && "sort=" + enc(), encFilters() && "filter=" + encFilters()].filter(Boolean);
+  const hash = parts.length ? "#" + parts.join("&") : "";
   history.replaceState(null, "", location.pathname + location.search + hash);
   const keep = u => (u = u.split("#")[0], u.endsWith("/" + view + "/") ? u + hash : u);
   document.querySelectorAll('a[href^="/t/"]').forEach(a => a.setAttribute("href", keep(a.getAttribute("href"))));
   document.querySelectorAll("header select option").forEach(o => { o.value = keep(o.value); });
-  render();
 }
-function render() {
+function renderSort() {
+  const redo = () => { apply(); renderSort(); };
   box.replaceChildren(el("span", {className: "lbl"}, "Sort by"));
   state.forEach((s, i) => {
     if (i) box.append(el("span", {className: "lbl"}, "then"));
     const lvl = el("span", {className: "lvl"});
     const sel = el("select", {ariaLabel: "Sort level " + (i + 1)});
-    for (const m of metrics) {
+    for (const m of sortable) {
       const o = new Option(m.label, m.key, false, m.key === s.key);
       o.disabled = m.key !== s.key && state.some(x => x.key === m.key);
       sel.append(o);
     }
-    sel.onchange = () => { s.key = sel.value; s.dir = byKey[s.key].dir; apply(); };
+    sel.onchange = () => { s.key = sel.value; s.dir = byKey[s.key].dir; redo(); };
     const team = text(s.key), down = s.dir === "d";
     const dir = el("button", {type: "button", className: "dir",
       title: team ? (down ? "Z to A" : "A to Z") : (down ? "Highest first" : "Lowest first")},
       team ? (down ? "Z→A" : "A→Z") : (down ? "↓ high" : "↑ low"));
-    dir.onclick = () => { s.dir = down ? "a" : "d"; apply(); };
+    dir.onclick = () => { s.dir = down ? "a" : "d"; redo(); };
     lvl.append(sel, dir);
     if (i) {
       const rm = el("button", {type: "button", className: "rm", title: "Remove", ariaLabel: "Remove sort level"}, "×");
-      rm.onclick = () => { state.splice(i, 1); apply(); };
+      rm.onclick = () => { state.splice(i, 1); redo(); };
       lvl.append(rm);
     }
     box.append(lvl);
   });
-  const free = metrics.find(m => !state.some(s => s.key === m.key));
+  const free = sortable.find(m => !state.some(s => s.key === m.key));
   if (free) {
     const add = el("button", {type: "button", className: "add"}, "+ Then by");
-    add.onclick = () => { state.push({key: free.key, dir: free.dir}); apply(); };
+    add.onclick = () => { state.push({key: free.key, dir: free.dir}); redo(); };
     box.append(add);
   }
   if (enc() !== def) {
     const reset = el("button", {type: "button", className: "reset"}, "Reset");
-    reset.onclick = () => { state = parse(def); apply(); };
+    reset.onclick = () => { state = parse(def); redo(); };
     box.append(reset);
   }
   box.hidden = false;
 }
+function renderFilters() {
+  const redo = () => { apply(); renderFilters(); };
+  fbox.replaceChildren(el("span", {className: "lbl"}, "Filter"));
+  filters.forEach((f, i) => {
+    const m = byKey[f.key], lvl = el("span", {className: "lvl"});
+    const sel = el("select", {ariaLabel: "Filter " + (i + 1)});
+    for (const x of metrics) sel.append(new Option(x.label, x.key, false, x.key === f.key));
+    sel.onchange = () => {
+      f.key = sel.value;
+      if (!opsFor(byKey[f.key]).includes(f.op)) f.op = opsFor(byKey[f.key])[0];
+      f.value = "";
+      redo();
+    };
+    const op = el("select", {ariaLabel: "Comparison"});
+    for (const o of opsFor(m)) op.append(new Option(OPS[o], o, false, o === f.op));
+    op.onchange = () => { f.op = op.value; apply(); };
+    const input = el("input", {type: m.fmt === "date" ? "date" : "text", value: f.value, ariaLabel: "Value",
+      placeholder: m.text ? "text" : m.fmt === "pct" ? "%" : "number", inputMode: m.text ? "text" : "decimal"});
+    input.oninput = () => { f.value = input.value; apply(); };
+    const rm = el("button", {type: "button", className: "rm", title: "Remove", ariaLabel: "Remove filter"}, "×");
+    rm.onclick = () => { filters.splice(i, 1); redo(); };
+    lvl.append(sel, op, input, rm);
+    fbox.append(lvl);
+  });
+  const add = el("button", {type: "button", className: "add"}, filters.length ? "+ And" : "+ Add filter");
+  add.onclick = () => {
+    const m = sortable.find(x => !x.text) || metrics[0];
+    filters.push({key: m.key, op: opsFor(m)[0], value: ""});
+    redo();
+    [...fbox.querySelectorAll("input")].pop().focus();
+  };
+  fbox.append(add);
+  if (filters.length) {
+    const clear = el("button", {type: "button", className: "reset"}, "Clear");
+    clear.onclick = () => { filters = []; redo(); };
+    fbox.append(clear);
+  }
+  fbox.append(count);
+  fbox.hidden = false;
+}
 apply();
+renderSort();
+renderFilters();
 })();"""
 
 
@@ -198,11 +280,16 @@ class Metric:
     value: Callable[[rankings.Stats], float | None]  # sort value; None = n/a
     desc: bool = True                                  # default sort direction
     text: bool = False                                 # sort alphabetically, not numerically
+    fmt: str | None = None                             # "pct" (a fraction, filtered as %) or "date"
 
 
-def _spec(metrics: list[Metric]) -> str:
-    return json.dumps([{"key": m.key, "label": m.label, "dir": "d" if m.desc else "a", "text": m.text}
-                       for m in metrics])
+def _spec(metrics: list[Metric], sortable: set[str]) -> str:
+    """The metrics the table script can filter on; those in `sortable` can also be sorted by."""
+    return json.dumps([{"key": m.key, "label": m.label, "dir": "d" if m.desc else "a", "text": m.text,
+                        "fmt": m.fmt, "sort": m.key in sortable} for m in metrics])
+
+
+SORTER = '<div class="sorter" id="sort" hidden></div><div class="sorter" id="filter" hidden></div>'
 
 
 @dataclass
@@ -226,9 +313,9 @@ TEAM = Metric("team", "Team", lambda s: None, desc=False, text=True)  # sorted b
 METRICS: dict[str, list[Metric]] = {
     "perceived": [Metric("p_wins", "Perceived wins", lambda s: s.p_wins),
                   Metric("p_losses", "Perceived losses", lambda s: s.p_losses, desc=False),
-                  Metric("p_pct", "Win %", lambda s: s.p_win_pct),
+                  Metric("p_pct", "Win %", lambda s: s.p_win_pct, fmt="pct"),
                   Metric("elo", "Elo", lambda s: s.elo),
-                  Metric("share", "Avg share", lambda s: s.avg_share),
+                  Metric("share", "Avg share", lambda s: s.avg_share, fmt="pct"),
                   Metric("wins", "Actual wins", lambda s: s.wins),
                   Metric("losses", "Actual losses", lambda s: s.losses, desc=False),
                   Metric("matches", "Matches", lambda s: s.matches)],
@@ -242,7 +329,7 @@ METRICS: dict[str, list[Metric]] = {
     "lost": [Metric("points_lost", "Points lost", lambda s: s.points_lost),
              Metric("losses", "Actual losses", lambda s: s.losses),
              Metric("lost_avg", "Avg / loss", lambda s: _per(s.points_lost, s.losses))],
-    "loyal": [Metric("roi", "ROI", lambda s: s.roi if s.bets else None),
+    "loyal": [Metric("roi", "ROI", lambda s: s.roi if s.bets else None, fmt="pct"),
               Metric("profit", "Profit", lambda s: s.bet_profit if s.bets else None),
               Metric("bets", "Bets", lambda s: s.bets),
               Metric("wins", "Actual wins", lambda s: s.wins),
@@ -281,6 +368,8 @@ DEFAULT_SORT = {
     "lost": "points_lost:d",
     "loyal": "roi:d,profit:d",
 }
+# Every metric, so any view can be filtered on any of them (e.g. matches played on "Points won").
+ALL_METRICS = list({m.key: m for ms in METRICS.values() for m in ms}.values())
 
 
 def _row_attrs(s: rankings.Stats, metrics: list[Metric]) -> str:
@@ -293,14 +382,15 @@ def _row_attrs(s: rankings.Stats, metrics: list[Metric]) -> str:
 
 def _ranking_table(stats: dict[str, rankings.Stats], view: str) -> str:
     metrics, cols = METRICS[view], COLUMNS[view]
-    spec = _spec([*metrics, TEAM])
+    keys = {m.key for m in metrics}
+    everything = [*metrics, *(m for m in ALL_METRICS if m.key not in keys)]
+    spec = _spec([*everything, TEAM], keys | {TEAM.key})
     head = '<tr><th class="n">#</th><th>Team</th>' + "".join(f'<th class="n">{c.label}</th>' for c in cols) + "</tr>"
     rows = []
     for i, s in enumerate(rankings.ranked(stats, view), 1):
-        rows.append(f'<tr {_row_attrs(s, metrics)}><td class="n rank">{i}</td><td>{_team(s.team)}</td>'
+        rows.append(f'<tr {_row_attrs(s, everything)}><td class="n rank">{i}</td><td>{_team(s.team)}</td>'
                     + "".join(f'<td class="n">{c.show(s)}</td>' for c in cols) + "</tr>")
-    return (f'<div class="sorter" hidden></div>'
-            f'<script type="application/json" id="metrics">{spec}</script>'
+    return (f'{SORTER}<script type="application/json" id="metrics">{spec}</script>'
             f'<div class="card"><table class="sortable" data-view="{view}" data-default="{DEFAULT_SORT[view]}"'
             f' data-tie="team" data-renumber>'
             f'<thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
@@ -309,7 +399,8 @@ def _ranking_table(stats: dict[str, rankings.Stats], view: str) -> str:
 
 MatchRow = tuple[rankings.Match, rankings.MatchInfo]
 MATCH_METRICS = [
-    Metric("date", "Date", lambda r: int(datetime.fromisoformat(r[0].created_at[:19]).timestamp())),
+    Metric("date", "Date", lambda r: int(datetime.fromisoformat(r[0].created_at[:19]).replace(tzinfo=timezone.utc).timestamp()),
+           fmt="date"),
     Metric("no", "Match #", lambda r: r[1].number),
     Metric("phase", "Prelim / Finals", lambda r: r[1].phase or "", desc=False, text=True),
     Metric("team_a", "Team 1", lambda r: r[0].a.team.lower(), desc=False, text=True),
@@ -317,16 +408,18 @@ MATCH_METRICS = [
     Metric("winner", "Winner", lambda r: (r[0].winner or "").lower(), desc=False, text=True),
     Metric("total", "Total points", lambda r: r[0].total),
     Metric("fav_share", "Favourite's share", lambda r: max(r[0].a.points, r[0].b.points) / r[0].total
-           if r[0].total else 0.5),
+           if r[0].total else 0.5, fmt="pct"),
     Metric("upset", "Upset", lambda r: int(r[0].upset)),
 ]
+EITHER_TEAM = Metric("teams", "Either team", lambda r: f"{r[0].a.team} | {r[0].b.team}".lower(), text=True)
 TOUR_METRIC = Metric("tour", "Tournament", lambda r: int(r[1].tournament.id.replace("-", "")))
 MATCHES_DEFAULT_SORT = "date:d"
 
 
 def _matches_table(matches: list[rankings.Match], info: dict[str, rankings.MatchInfo],
                    show_tour: bool) -> str:
-    metrics = [TOUR_METRIC, *MATCH_METRICS] if show_tour else MATCH_METRICS
+    sortable = [TOUR_METRIC, *MATCH_METRICS] if show_tour else MATCH_METRICS
+    metrics = [EITHER_TEAM, *sortable]
     head = ('<tr><th class="n">#</th>' + ("<th>Tournament</th>" if show_tour else "")
             + '<th>Stage</th><th>Date</th><th>Team</th><th class="n">Points</th><th class="n">Points</th>'
             '<th>Team</th><th>Winner</th><th></th></tr>')
@@ -343,8 +436,7 @@ def _matches_table(matches: list[rankings.Match], info: dict[str, rankings.Match
             f'<td class="n">{_fmt(m.b.points)}</td><td>{_team(m.b.team, fav == m.b.team)}</td>'
             f'<td>{escape(m.winner or "–")}</td>'
             f'<td>{"<span class=badge>upset</span>" if m.upset else ""}</td></tr>')
-    return (f'<div class="sorter" hidden></div>'
-            f'<script type="application/json" id="metrics">{_spec(metrics)}</script>'
+    return (f'{SORTER}<script type="application/json" id="metrics">{_spec(metrics, {m.key for m in sortable})}</script>'
             f'<div class="card"><table class="sortable" data-view="matches" data-default="{MATCHES_DEFAULT_SORT}"'
             f' data-tie="seq"><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
             f'<script>{SORT_JS}</script>')

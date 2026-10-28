@@ -29,7 +29,8 @@ class SortableTableTest(unittest.TestCase):
         for view in web.METRICS:
             html = self.page(view)
             spec = json.loads(re.search(r'id="metrics">(.*?)</script>', html).group(1))
-            self.assertEqual([m["key"] for m in spec], [m.key for m in web.METRICS[view]] + ["team"])
+            self.assertEqual([m["key"] for m in spec if m["sort"]], [m.key for m in web.METRICS[view]] + ["team"])
+            self.assertEqual({m["key"] for m in spec}, {m.key for m in web.ALL_METRICS} | {"team"})
             rows = self.rows(html)
             order = [re.search(r'data-team="([^"]*)"', r).group(1) for r in rows]
             self.assertEqual(order, [s.team.lower() for s in rankings.ranked(stats, view)], view)
