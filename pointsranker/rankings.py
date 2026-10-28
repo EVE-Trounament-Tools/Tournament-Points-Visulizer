@@ -210,6 +210,36 @@ def tournaments(matches: list[Match], names: dict | None = None,
     return out[::-1]
 
 
+def phase(t: Tournament, st: Stage) -> str | None:
+    """"Finals" or "Prelim" for a stage: the last of several stages is the finals, as is any
+    stage labelled as one. None for an unlabelled single-stage tournament."""
+    if st.label and "final" in st.label.lower():
+        return "Finals"
+    if len(t.stages) > 1:
+        return "Finals" if st is t.stages[-1] else "Prelim"
+    return "Prelim" if st.label else None
+
+
+@dataclass
+class MatchInfo:
+    tournament: Tournament
+    number: int         # 1-based, in match order across the whole tournament
+    phase: str | None
+
+
+def match_info(tours: list[Tournament]) -> dict[str, MatchInfo]:
+    """Match id -> its tournament, number within the tournament and phase."""
+    out = {}
+    for t in tours:
+        n = 0
+        for st in t.stages:
+            ph = phase(t, st)
+            for m in st.matches:
+                n += 1
+                out[m.id] = MatchInfo(t, n, ph)
+    return out
+
+
 def team_stats(matches: list[Match]) -> dict[str, Stats]:
     stats: dict[str, Stats] = defaultdict(lambda: Stats(""))
     for m in matches:  # chronological, which Elo depends on

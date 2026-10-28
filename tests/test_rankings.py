@@ -69,6 +69,11 @@ class RankingsTest(unittest.TestCase):
         self.assertEqual(len(at.matches), 3)
         self.assertEqual([s.label for s in tours[0].stages], [None])
 
+        info = rankings.match_info(tours)
+        self.assertEqual([(info[m].number, info[m].phase) for m in ("f1", "f2", "x1")],
+                         [(1, "Prelim"), (2, "Prelim"), (3, "Finals")])
+        self.assertEqual((info["y1"].number, info["y1"].phase), (1, None))
+
     def test_loyal_bettor_rewards_upsets_and_penalises_losses(self):
         # A wins as a 90% favourite, then C (10% underdog) upsets B, then A loses.
         self.add(pred("m1", "2026-09-13T21:00:00Z", ("A", 900_000), ("B", 100_000), winner=0))

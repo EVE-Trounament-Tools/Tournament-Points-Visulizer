@@ -5,6 +5,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -81,7 +82,7 @@ SORT_JS = r"""(() => {
 const table = document.querySelector("table.sortable"), box = document.querySelector(".sorter");
 const metrics = JSON.parse(document.getElementById("metrics").textContent);
 const byKey = Object.fromEntries(metrics.map(m => [m.key, m]));
-const view = table.dataset.view, def = table.dataset.default;
+const view = table.dataset.view, def = table.dataset.default, tie = table.dataset.tie;
 const parse = str => (str || "").split(",").map(x => x.split(":"))
   .filter(([k], i, all) => byKey[k] && all.findIndex(([j]) => j === k) === i)
   .map(([key, d]) => ({key, dir: d === "a" ? "a" : "d"}));
@@ -90,16 +91,17 @@ let state = parse(fromHash && decodeURIComponent(fromHash));
 if (!state.length) state = parse(def);
 const enc = () => state.map(s => s.key + ":" + s.dir).join(",");
 const get = (tr, k) => tr.getAttribute("data-" + k);
+const text = k => byKey[k] ? byKey[k].text : k === "team";
 function cmp(a, b) {
-  for (const {key, dir} of state) {
+  for (const {key, dir} of [...state, {key: tie, dir: "a"}]) {
     const x = get(a, key), y = get(b, key);
     let c;
-    if (key === "team") c = x.localeCompare(y);
-    else if (x === "" || y === "") { if (x !== y) return x === "" ? 1 : -1; continue; }
+    if (x === "" || y === "") { if (x !== y) return x === "" ? 1 : -1; continue; }
+    else if (text(key)) c = x.localeCompare(y);
     else c = parseFloat(x) - parseFloat(y);
     if (c) return dir === "a" ? c : -c;
   }
-  return get(a, "team").localeCompare(get(b, "team"));
+  return 0;
 }
 function el(tag, props, text) {
   const e = Object.assign(document.createElement(tag), props);
@@ -108,7 +110,8 @@ function el(tag, props, text) {
 }
 function apply() {
   const body = table.tBodies[0];
-  [...body.rows].sort(cmp).forEach((r, i) => { r.cells[0].textContent = i + 1; body.appendChild(r); });
+  const renumber = "renumber" in table.dataset;
+  [...body.rows].sort(cmp).forEach((r, i) => { if (renumber) r.cells[0].textContent = i + 1; body.appendChild(r); });
   const hash = enc() === def ? "" : "#sort=" + enc();
   history.replaceState(null, "", location.pathname + location.search + hash);
   const keep = u => (u = u.split("#")[0], u.endsWith("/" + view + "/") ? u + hash : u);
@@ -128,7 +131,7 @@ function render() {
       sel.append(o);
     }
     sel.onchange = () => { s.key = sel.value; s.dir = byKey[s.key].dir; apply(); };
-    const team = s.key === "team", down = s.dir === "d";
+    const team = text(s.key), down = s.dir === "d";
     const dir = el("button", {type: "button", className: "dir",
       title: team ? (down ? "Z to A" : "A to Z") : (down ? "Highest first" : "Lowest first")},
       team ? (down ? "Z→A" : "A→Z") : (down ? "↓ high" : "↑ low"));
@@ -194,6 +197,12 @@ class Metric:
     label: str
     value: Callable[[rankings.Stats], float | None]  # sort value; None = n/a
     desc: bool = True                                  # default sort direction
+    text: bool = False                                 # sort alphabetically, not numerically
+
+
+def _spec(metrics: list[Metric]) -> str:
+    return json.dumps([{"key": m.key, "label": m.label, "dir": "d" if m.desc else "a", "text": m.text}
+                       for m in metrics])
 
 
 @dataclass
@@ -213,7 +222,7 @@ def _per(total: float, n: int) -> float | None:
     return total / n if n else None
 
 
-TEAM = Metric("team", "Team", lambda s: None, desc=False)  # sorted by name, see _row_attrs
+TEAM = Metric("team", "Team", lambda s: None, desc=False, text=True)  # sorted by name, see _row_attrs
 METRICS: dict[str, list[Metric]] = {
     "perceived": [Metric("p_wins", "Perceived wins", lambda s: s.p_wins),
                   Metric("p_losses", "Perceived losses", lambda s: s.p_losses, desc=False),
@@ -284,8 +293,7 @@ def _row_attrs(s: rankings.Stats, metrics: list[Metric]) -> str:
 
 def _ranking_table(stats: dict[str, rankings.Stats], view: str) -> str:
     metrics, cols = METRICS[view], COLUMNS[view]
-    spec = json.dumps([{"key": m.key, "label": m.label, "dir": "d" if m.desc else "a"}
-                       for m in [*metrics, TEAM]])
+    spec = _spec([*metrics, TEAM])
     head = '<tr><th class="n">#</th><th>Team</th>' + "".join(f'<th class="n">{c.label}</th>' for c in cols) + "</tr>"
     rows = []
     for i, s in enumerate(rankings.ranked(stats, view), 1):
@@ -293,24 +301,53 @@ def _ranking_table(stats: dict[str, rankings.Stats], view: str) -> str:
                     + "".join(f'<td class="n">{c.show(s)}</td>' for c in cols) + "</tr>")
     return (f'<div class="sorter" hidden></div>'
             f'<script type="application/json" id="metrics">{spec}</script>'
-            f'<div class="card"><table class="sortable" data-view="{view}" data-default="{DEFAULT_SORT[view]}">'
+            f'<div class="card"><table class="sortable" data-view="{view}" data-default="{DEFAULT_SORT[view]}"'
+            f' data-tie="team" data-renumber>'
             f'<thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
             f'<script>{SORT_JS}</script>')
 
 
-def _matches_table(matches: list[rankings.Match]) -> str:
-    head = ('<tr><th>Date</th><th>Team</th><th class="n">Points</th><th class="n">Points</th>'
+MatchRow = tuple[rankings.Match, rankings.MatchInfo]
+MATCH_METRICS = [
+    Metric("date", "Date", lambda r: int(datetime.fromisoformat(r[0].created_at[:19]).timestamp())),
+    Metric("no", "Match #", lambda r: r[1].number),
+    Metric("phase", "Prelim / Finals", lambda r: r[1].phase or "", desc=False, text=True),
+    Metric("team_a", "Team 1", lambda r: r[0].a.team.lower(), desc=False, text=True),
+    Metric("team_b", "Team 2", lambda r: r[0].b.team.lower(), desc=False, text=True),
+    Metric("winner", "Winner", lambda r: (r[0].winner or "").lower(), desc=False, text=True),
+    Metric("total", "Total points", lambda r: r[0].total),
+    Metric("fav_share", "Favourite's share", lambda r: max(r[0].a.points, r[0].b.points) / r[0].total
+           if r[0].total else 0.5),
+    Metric("upset", "Upset", lambda r: int(r[0].upset)),
+]
+TOUR_METRIC = Metric("tour", "Tournament", lambda r: int(r[1].tournament.id.replace("-", "")))
+MATCHES_DEFAULT_SORT = "date:d"
+
+
+def _matches_table(matches: list[rankings.Match], info: dict[str, rankings.MatchInfo],
+                   show_tour: bool) -> str:
+    metrics = [TOUR_METRIC, *MATCH_METRICS] if show_tour else MATCH_METRICS
+    head = ('<tr><th class="n">#</th>' + ("<th>Tournament</th>" if show_tour else "")
+            + '<th>Stage</th><th>Date</th><th>Team</th><th class="n">Points</th><th class="n">Points</th>'
             '<th>Team</th><th>Winner</th><th></th></tr>')
     rows = []
-    for m in reversed(matches):
-        fav = m.perceived_winner
+    for seq, m in reversed(list(enumerate(matches))):
+        mi, fav = info[m.id], m.perceived_winner
+        attrs = " ".join([f'data-seq="{seq}"', *(f'data-{x.key}="{escape(str(x.value((m, mi))))}"'
+                                                  for x in metrics)])
         rows.append(
-            f'<tr><td>{escape(m.created_at[:10])}</td>'
+            f'<tr {attrs}><td class="n rank">{mi.number}</td>'
+            + (f'<td>{escape(mi.tournament.label)}</td>' if show_tour else "")
+            + f'<td>{escape(mi.phase or "–")}</td><td>{escape(m.created_at[:10])}</td>'
             f'<td>{_team(m.a.team, fav == m.a.team)}</td><td class="n">{_fmt(m.a.points)}</td>'
             f'<td class="n">{_fmt(m.b.points)}</td><td>{_team(m.b.team, fav == m.b.team)}</td>'
             f'<td>{escape(m.winner or "–")}</td>'
             f'<td>{"<span class=badge>upset</span>" if m.upset else ""}</td></tr>')
-    return f'<div class="card"><table>{head}{"".join(rows)}</table></div>'
+    return (f'<div class="sorter" hidden></div>'
+            f'<script type="application/json" id="metrics">{_spec(metrics)}</script>'
+            f'<div class="card"><table class="sortable" data-view="matches" data-default="{MATCHES_DEFAULT_SORT}"'
+            f' data-tie="seq"><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+            f'<script>{SORT_JS}</script>')
 
 
 @dataclass
@@ -332,7 +369,8 @@ NOTES = {
     "loyal": f"Profit from betting {rankings.STAKE:,} points on this team in every match it played. "
              f"Wins pay out at the match's real odds (upsets pay big, heavy-favourite wins pay little); "
              f"every loss costs the full {rankings.STAKE:,}.",
-    "matches": "Bold team = crowd favourite (more points). Upset = favourite lost.",
+    "matches": "Matches are numbered in order within their tournament. Bold team = crowd favourite "
+               "(more points). Upset = favourite lost.",
 }
 
 
@@ -372,7 +410,7 @@ def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], s
     if not scoped:
         body = '<div class="card empty">No matches recorded yet.</div>'
     elif view == "matches":
-        body = _matches_table(scoped)
+        body = _matches_table(scoped, rankings.match_info(tours), tour is None)
     else:
         body = _ranking_table(rankings.team_stats(scoped), view)
     title = (tour.label + (f" · {stage.label}" if stage else "")) if tour else "All time"
