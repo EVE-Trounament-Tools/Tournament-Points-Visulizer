@@ -23,7 +23,7 @@ ESI_IDS = "https://esi.evetech.net/latest/universe/ids/?datasource=tranquility"
 EVEWHO_API = "https://evewho.com/api/allilist/{id}"
 EVEWHO_PAGE = "https://evewho.com/alliance/{id}"
 LOGO_URL = "https://images.evetech.net/alliances/{id}/logo?size=128"
-USER_AGENT = "pointsRanker (github.com/EVE-Trounament-Tools/Tournament-Points-Visulizer)"
+USER_AGENT = "pointsRanker (github.com/EVE-Tournament-Tools/Tournament-Points-Visualizer)"
 
 DEFAULT_LOGO = (Path(__file__).parent / "assets" / "default_alliance_logo.png").read_bytes()
 DEFAULT_LOGO_MD5 = hashlib.md5(DEFAULT_LOGO).hexdigest()
