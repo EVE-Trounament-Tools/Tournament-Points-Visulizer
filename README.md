@@ -9,7 +9,10 @@ Online Alliance Tournament streams) into SQLite, and publishes a website that ra
   opposing pool when it won; points its backers lost when it lost.
 - **Matches**: every match with both pools, the favourite and upsets.
 
-Rankings are per tournament (matches more than 14 days apart start a new one) and all-time.
+Rankings are per tournament and all-time. Matches split into stages wherever there's a break
+of more than 14 days. A stage that starts within 75 days of the previous one's end joins it as
+a later stage (feeders/trials/prelims, then finals, usually 1–2 months apart). A tournament with
+several stages can be viewed per stage or with all stages combined.
 Team logos are the EVE alliance logos shown on evewho.com, or EVE's default alliance logo.
 
 Python 3.10+, standard library only. Publishing needs Node (for `npx wrangler`).
@@ -27,15 +30,19 @@ python -m pointsranker publish           # build + deploy to Cloudflare
 
 Data lives in `data/predictions.db`. Two optional JSON files in the repo root tune the output:
 
-- `tournaments.json`: names for tournaments, keyed by start date
-  (`{"2026-08-29": "Alliance Tournament XXII"}`).
+- `tournaments.json`: names, keyed by a stage's start date. The value is either the tournament
+  name (`"2026-04-11": "Anger Games 7"`) or an object with any of `name`, `stage` (the stage
+  label, e.g. `"Feeders"`) and `new_tournament: true` (stop this stage joining the previous
+  tournament). Stages without a label are named from their titles (Feeders/Trials/Prelims),
+  and the last one is named Finals.
 - `teams_overrides.json`: alliance ids for team names ESI can't resolve
   (`{"Lazerhawks": 99001234}`). Run `teams --refresh` after editing it.
 
 ## Hosting
 
 The site is plain static files, served for free by a Cloudflare Worker with static assets
-(`deploy/wrangler.toml`), at `https://pointsranker.<your-subdomain>.workers.dev`.
+(`deploy/wrangler.toml`), at <https://pointsranker.ackbad-tournament-tools.workers.dev>
+(generally `https://pointsranker.<your-subdomain>.workers.dev`).
 
 One-time setup:
 

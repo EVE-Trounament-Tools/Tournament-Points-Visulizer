@@ -36,6 +36,8 @@ header select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid v
 nav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
 nav a{padding:6px 12px;border-radius:999px;background:var(--chip);color:var(--fg);text-decoration:none;font-size:14px}
 nav a.on{background:var(--accent);color:var(--card)}
+nav.stages{margin-bottom:8px}nav.stages a{font-size:13px;padding:4px 10px;background:transparent;border:1px solid var(--line)}
+nav.stages a.on{background:var(--accent-bg);color:var(--accent);border-color:var(--accent)}
 .summary{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 14px}
 .stat b{display:block;font-size:18px;font-variant-numeric:tabular-nums}
@@ -148,14 +150,38 @@ NOTES = {
 }
 
 
-def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], t: str, view: str) -> str:
-    tour = next((x for x in tours if x.id == t), None)
-    scoped = tour.matches if tour else all_matches
-    options = [("all", "All time")] + [(x.id, f"{x.label} · {len(x.matches)} matches") for x in tours]
-    select = "".join(f'<option value="{page_url(v, view)}"{" selected" if v == t else ""}>{escape(label)}</option>'
+def _scope(tours: list[rankings.Tournament], scope: str):
+    """(tournament, stage) for a scope id: "all", a tournament id or a stage id."""
+    for t in tours:
+        if t.id == scope:
+            return t, None
+        for st in t.stages:
+            if len(t.stages) > 1 and st.id == scope:
+                return t, st
+    return None, None
+
+
+def _tour_option(t: rankings.Tournament) -> str:
+    stage = f" · {t.stages[0].label}" if len(t.stages) == 1 and t.stages[0].label else ""
+    return f"{t.label}{stage} · {len(t.matches)} matches"
+
+
+def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], scope: str, view: str) -> str:
+    tour, stage = _scope(tours, scope)
+    scoped = stage.matches if stage else tour.matches if tour else all_matches
+    current = tour.id if tour else "all"
+    options = [("all", "All time")] + [(x.id, _tour_option(x)) for x in tours]
+    select = "".join(f'<option value="{page_url(v, view)}"{" selected" if v == current else ""}>{escape(label)}</option>'
                      for v, label in options)
     links = "".join(f'<li><a href="{page_url(v, view)}">{escape(label)}</a></li>' for v, label in options)
-    tabs = "".join(f'<a href="{page_url(t, v)}"{" class=on" if v == view else ""}>{label}</a>'
+    stages = ""
+    if tour and len(tour.stages) > 1:
+        both = "Both stages" if len(tour.stages) == 2 else "All stages"
+        chips = [(tour.id, both)] + [(st.id, st.label) for st in tour.stages]
+        stages = '<nav class="stages">' + "".join(
+            f'<a href="{page_url(sid, view)}"{" class=on" if sid == scope else ""}>{escape(label)}</a>'
+            for sid, label in chips) + "</nav>"
+    tabs = "".join(f'<a href="{page_url(scope, v)}"{" class=on" if v == view else ""}>{label}</a>'
                    for v, label in [*VIEW_LABELS.items(), ("matches", "Matches")])
     if not scoped:
         body = '<div class="card empty">No matches recorded yet.</div>'
@@ -163,28 +189,33 @@ def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], t
         body = _matches_table(scoped)
     else:
         body = _ranking_table(rankings.team_stats(scoped), view)
-    title = tour.label if tour else "All time"
+    title = (tour.label + (f" · {stage.label}" if stage else "")) if tour else "All time"
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>pointsRanker · {escape(title)}</title><style>{CSS}</style></head><body><main>
 <header><div><h1><a href="/">pointsRanker</a></h1><div class="sub">Team rankings from Twitch channel-point predictions</div></div>
 <select onchange="location=this.value" aria-label="Tournament">{select}</select></header>
 <noscript><details class="tours"><summary>Tournaments</summary><ul>{links}</ul></details></noscript>
-<nav>{tabs}</nav>{_summary(scoped)}<p class="note">{NOTES[view]}</p>{body}
+{stages}<nav>{tabs}</nav>{_summary(scoped)}<p class="note">{NOTES[view]}</p>{body}
 </main></body></html>"""
 
 
-def page_paths(conn: sqlite3.Connection, names: dict[str, str]) -> list[str]:
+def _scopes(tours: list[rankings.Tournament]) -> list[str]:
+    return ["all"] + [sid for t in tours
+                      for sid in [t.id, *(st.id for st in t.stages if len(t.stages) > 1)]]
+
+
+def page_paths(conn: sqlite3.Connection, names: dict) -> list[str]:
     """Every page path the site has, for the static build."""
     tours = rankings.tournaments(rankings.load_matches(conn), names)
-    return ["/"] + [page_url(t, v) for t in ["all", *(x.id for x in tours)] for v in VIEWS]
+    return ["/"] + [page_url(sc, v) for sc in _scopes(tours) for v in VIEWS]
 
 
 def logo_paths(conn: sqlite3.Connection) -> list[str]:
     return [f"/logo/{logo_slug(r['name'])}.png" for r in conn.execute("SELECT name FROM teams")]
 
 
-def render(conn: sqlite3.Connection, path: str, names: dict[str, str]) -> Response | None:
+def render(conn: sqlite3.Connection, path: str, names: dict) -> Response | None:
     """Render one site path, or None if there's no such page."""
     if path.startswith("/logo/") and path.endswith(".png"):
         slug = path[len("/logo/"):-len(".png")]
@@ -198,7 +229,7 @@ def render(conn: sqlite3.Connection, path: str, names: dict[str, str]) -> Respon
         t, view = (tours[0].id if tours else "all"), "perceived"
     elif m := PAGE_RE.match(path):
         t, view = m.groups()
-        if view not in VIEWS or (t != "all" and all(x.id != t for x in tours)):
+        if view not in VIEWS or t not in _scopes(tours):
             return None
     else:
         return None
@@ -213,7 +244,7 @@ def not_found_page() -> bytes:
             f'</main></body></html>').encode()
 
 
-def make_handler(db_path: Path, names: dict[str, str]):
+def make_handler(db_path: Path, names: dict):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, r: Response) -> None:
             self.send_response(r.status)
@@ -250,7 +281,7 @@ def make_handler(db_path: Path, names: dict[str, str]):
     return Handler
 
 
-def serve(db_path: Path, host: str, port: int, names: dict[str, str]) -> None:
+def serve(db_path: Path, host: str, port: int, names: dict) -> None:
     server = ThreadingHTTPServer((host, port), make_handler(db_path.resolve(), names))
     log.info("serving rankings on http://%s:%d", host, port)
     try:

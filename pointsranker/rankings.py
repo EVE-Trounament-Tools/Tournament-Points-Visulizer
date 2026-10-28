@@ -6,6 +6,7 @@ Points won/lost are from the backers' point of view: when a team actually wins
 its backers take the opposing pool; when it loses they lose their own pool.
 """
 import json
+import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -14,7 +15,9 @@ from pathlib import Path
 
 ELO_START = 1500.0
 ELO_K = 32.0
-TOURNAMENT_GAP = timedelta(days=14)
+STAGE_GAP = timedelta(days=14)    # a longer break between matches starts a new stage
+FINALS_GAP = timedelta(days=75)   # a stage starting within this of the previous one's end belongs
+                                  # to the same tournament (feeders -> finals are 1-2 months apart)
 
 
 @dataclass
@@ -50,10 +53,21 @@ class Match:
 
 
 @dataclass
-class Tournament:
-    id: str
-    label: str
+class Stage:
+    id: str            # "<tournament id>-<slug>", e.g. "2025-08-30-feeders"
+    label: str | None  # None for an unnamed single-stage tournament
     matches: list[Match]
+
+
+@dataclass
+class Tournament:
+    id: str            # start date of its first stage, YYYY-MM-DD
+    label: str
+    stages: list[Stage]
+
+    @property
+    def matches(self) -> list[Match]:
+        return [m for s in self.stages for m in s.matches]
 
 
 @dataclass
@@ -109,26 +123,75 @@ def _date(ts: str) -> datetime:
     return datetime.fromisoformat(ts[:19])
 
 
-def load_names(path: Path | None) -> dict[str, str]:
+def load_names(path: Path | None) -> dict:
+    """tournaments.json: keyed by a stage's start date (YYYY-MM-DD). A value is either the
+    tournament's name, or {"name": ..., "stage": ..., "new_tournament": true} where every
+    field is optional and new_tournament stops the stage joining the previous tournament."""
     return json.loads(path.read_text()) if path and path.exists() else {}
 
 
-def tournaments(matches: list[Match], names: dict[str, str] | None = None,
-                gap: timedelta = TOURNAMENT_GAP) -> list[Tournament]:
-    """Split matches into tournaments wherever there's a gap longer than `gap`. Newest first."""
-    groups: list[list[Match]] = []
+def _span(start: datetime, end: datetime) -> str:
+    if start.year == end.year:
+        return f"{start:%b %-d} – {end:%b %-d %Y}"
+    return f"{start:%b %-d %Y} – {end:%b %-d %Y}"
+
+
+def _stage_kind(matches: list[Match]) -> str | None:
+    titles = " ".join(m.title.lower() for m in matches)
+    for word, label in (("feeder", "Feeders"), ("trial", "Trials"), ("qualif", "Qualifiers"),
+                        ("prelim", "Prelims")):
+        if word in titles:
+            return label
+    return None
+
+
+def _slug(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "stage"
+
+
+def tournaments(matches: list[Match], names: dict | None = None,
+                stage_gap: timedelta = STAGE_GAP, finals_gap: timedelta = FINALS_GAP) -> list[Tournament]:
+    """Group matches into stages (split on breaks longer than `stage_gap`) and stages into
+    tournaments (a stage starting within `finals_gap` of the previous one joins it). Newest first."""
+    names = names or {}
+
+    def conf(stage: list[Match]) -> dict:
+        v = names.get(_date(stage[0].created_at).strftime("%Y-%m-%d"), {})
+        return {"name": v} if isinstance(v, str) else v
+
+    stages: list[list[Match]] = []
     for m in matches:
-        if groups and _date(m.created_at) - _date(groups[-1][-1].created_at) <= gap:
-            groups[-1].append(m)
+        if stages and _date(m.created_at) - _date(stages[-1][-1].created_at) <= stage_gap:
+            stages[-1].append(m)
         else:
-            groups.append([m])
+            stages.append([m])
+
+    groups: list[list[list[Match]]] = []
+    for st in stages:
+        joins = (groups and not conf(st).get("new_tournament")
+                 and _date(st[0].created_at) - _date(groups[-1][-1][-1].created_at) <= finals_gap)
+        if joins:
+            groups[-1].append(st)
+        else:
+            groups.append([st])
+
     out = []
     for g in groups:
-        start, end = _date(g[0].created_at), _date(g[-1].created_at)
+        start, end = _date(g[0][0].created_at), _date(g[-1][-1].created_at)
         tid = start.strftime("%Y-%m-%d")
-        span = (f"{start:%b %-d} – {end:%b %-d %Y}" if start.year == end.year
-                else f"{start:%b %-d %Y} – {end:%b %-d %Y}")
-        out.append(Tournament(tid, (names or {}).get(tid, span), g))
+        label = next((conf(st)["name"] for st in g if conf(st).get("name")), _span(start, end))
+        built, seen = [], set()
+        for i, st in enumerate(g):
+            stage_label = conf(st).get("stage")
+            if not stage_label and len(g) > 1:
+                last = i == len(g) - 1
+                stage_label = "Finals" if last else _stage_kind(st) or "Prelims"
+            sid = f"{tid}-{_slug(stage_label or 'all')}"
+            while sid in seen:
+                sid += "-2"
+            seen.add(sid)
+            built.append(Stage(sid, stage_label, st))
+        out.append(Tournament(tid, label, built))
     return out[::-1]
 
 

@@ -22,7 +22,7 @@ def _file_for(out: Path, path: str) -> Path:
     return out / (path.lstrip("/") + "index.html" if path.endswith("/") else path.lstrip("/"))
 
 
-def build(db_path: Path, out: Path, names: dict[str, str]) -> int:
+def build(db_path: Path, out: Path, names: dict) -> int:
     """Render every page and logo into `out`, replacing it atomically. Returns files written."""
     conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -57,7 +57,7 @@ def deploy(out: Path) -> None:
     subprocess.run([*WRANGLER, "deploy", "--config", str(WRANGLER_CONFIG)], check=True, cwd=ROOT)
 
 
-def publish(db_path: Path, out: Path, names: dict[str, str]) -> None:
+def publish(db_path: Path, out: Path, names: dict) -> None:
     n = build(db_path, out, names)
     log.info("built %d files into %s; deploying", n, out)
     deploy(out)
@@ -68,7 +68,7 @@ class Publisher:
     """Background publisher for the collector: `request()` is cheap and never blocks;
     deploys run on their own thread, at most once per PUBLISH_INTERVAL."""
 
-    def __init__(self, db_path: Path, out: Path, names: dict[str, str]):
+    def __init__(self, db_path: Path, out: Path, names: dict):
         self.args = (db_path, out, names)
         self.wanted = threading.Event()
         self.stopping = threading.Event()

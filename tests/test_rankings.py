@@ -53,6 +53,22 @@ class RankingsTest(unittest.TestCase):
         self.assertEqual(tours[0].label, "AT XXII")
         self.assertEqual(tours[1].label, "Oct 24 – Oct 26 2025")
 
+    def test_feeders_and_finals_form_one_tournament(self):
+        self.add(pred("f1", "2025-08-30T12:00:00Z", ("A", 1), ("B", 2), 0))
+        self.add(pred("f2", "2025-09-07T12:00:00Z", ("A", 1), ("C", 2), 0))
+        self.add(pred("x1", "2025-10-24T12:00:00Z", ("B", 1), ("C", 2), 0))  # 47 days later
+        self.add(pred("y1", "2026-04-11T12:00:00Z", ("A", 1), ("C", 2), 0))  # unrelated event
+        self.add(pred("y2", "2026-06-01T12:00:00Z", ("B", 1), ("C", 2), 0))  # but forced apart
+        names = {"2025-08-30": {"name": "ATXXI", "stage": "Feeders"}, "2026-06-01": {"new_tournament": True}}
+        tours = rankings.tournaments(rankings.load_matches(self.conn), names)
+        self.assertEqual([t.id for t in tours], ["2026-06-01", "2026-04-11", "2025-08-30"])
+        at = tours[-1]
+        self.assertEqual(at.label, "ATXXI")
+        self.assertEqual([(s.id, s.label, len(s.matches)) for s in at.stages],
+                         [("2025-08-30-feeders", "Feeders", 2), ("2025-08-30-finals", "Finals", 1)])
+        self.assertEqual(len(at.matches), 3)
+        self.assertEqual([s.label for s in tours[0].stages], [None])
+
     def test_ranked_views(self):
         self.add(pred("m1", "2026-09-13T21:00:00Z", ("A", 300), ("B", 100), winner=0))
         self.add(pred("m2", "2026-09-13T22:00:00Z", ("C", 50), ("B", 400), winner=0))

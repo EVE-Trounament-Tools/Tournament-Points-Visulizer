@@ -1,14 +1,13 @@
 {
-  "2026-08-29": "Alliance Tournament XXII",
-  "2025-10-24": "Alliance Tournament XXI",
-  "2025-08-30": "Alliance Tournament XXI Feeders",
+  "2026-08-29": {"name": "Alliance Tournament XXII", "stage": "Feeders"},
+  "2026-04-11": "Anger Games 7",
+  "2025-08-30": {"name": "Alliance Tournament XXI", "stage": "Feeders"},
   "2025-03-29": "CC2",
-  "2024-10-19": "Alliance Tournament XX",
-  "2023-08-12": "Alliance Tournament XIX",
-  "2023-06-24": "Alliance Tournament XIX Feeders",
+  "2024-08-24": {"name": "Alliance Tournament XX", "stage": "Feeders"},
+  "2024-04-13": "Anger Games 6",
+  "2023-06-24": {"name": "Alliance Tournament XIX", "stage": "Feeders"},
   "2023-03-18": "Captains Cup",
-  "2022-11-12": "Alliance Tournament XVIII",
-  "2022-10-01": "Alliance Tournament XVIII Trials",
-  "2021-11-06": "Alliance Tournament XVII",
-  "2021-09-04": "Alliance Tournament XVII Feeders"
+  "2022-10-01": {"name": "Alliance Tournament XVIII", "stage": "Trials"},
+  "2022-04-30": "Anger Games 5",
+  "2021-09-04": {"name": "Alliance Tournament XVII", "stage": "Feeders"}
 }
