@@ -1,0 +1,15 @@
+# Install:  cp contrib/pointsranker.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+# Use:      systemctl --user start pointsranker   /   systemctl --user stop pointsranker
+# Logs:     journalctl --user -u pointsranker -f
+[Unit]
+Description=Record Twitch channel-point predictions (pointsRanker)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/dev/eve/pointsRanker
+ExecStart=/usr/bin/env python3 -m pointsranker run
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

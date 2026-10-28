@@ -1,0 +1,16 @@
+[project]
+name = "pointsranker"
+version = "0.1.0"
+description = "Record Twitch channel-point predictions to SQLite, with EVE alliance logos"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+pointsranker = "pointsranker.__main__:main"
+
+[tool.setuptools.package-data]
+pointsranker = ["assets/*.png"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
