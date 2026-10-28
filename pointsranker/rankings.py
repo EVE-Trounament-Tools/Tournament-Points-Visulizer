@@ -96,6 +96,18 @@ class Stats:
         return self.p_wins / decided if decided else 0.0
 
     @property
+    def win_pct(self) -> float | None:
+        decided = self.wins + self.losses
+        return self.wins / decided if decided else None
+
+    @property
+    def underrated(self) -> float | None:
+        """How far the actual win rate beats the predicted (perceived) one; negative = overrated."""
+        if self.win_pct is None or not self.p_wins + self.p_losses:
+            return None
+        return self.win_pct - self.p_win_pct
+
+    @property
     def avg_share(self) -> float:
         return self.share_sum / self.matches if self.matches else 0.0
 
@@ -240,9 +252,24 @@ def match_info(tours: list[Tournament]) -> dict[str, MatchInfo]:
     return out
 
 
-def team_stats(matches: list[Match]) -> dict[str, Stats]:
+def elo_ratings(matches: list[Match]) -> dict[str, float]:
+    """Elo over perceived results, in match order (`matches` must be chronological)."""
+    elo: dict[str, float] = defaultdict(lambda: ELO_START)
+    for m in matches:
+        a, b, pw = m.a.team, m.b.team, m.perceived_winner
+        result_a = 0.5 if pw is None else float(pw == a)
+        expected_a = 1 / (1 + 10 ** ((elo[b] - elo[a]) / 400))
+        delta = ELO_K * (result_a - expected_a)
+        elo[a] += delta
+        elo[b] -= delta
+    return dict(elo)
+
+
+def team_stats(matches: list[Match], history: list[Match] | None = None) -> dict[str, Stats]:
+    """Stats over `matches`. Elo always runs over `history` (every match, all time),
+    defaulting to `matches`, so a team's rating is the same in every tournament's view."""
     stats: dict[str, Stats] = defaultdict(lambda: Stats(""))
-    for m in matches:  # chronological, which Elo depends on
+    for m in matches:
         sa, sb = stats[m.a.team], stats[m.b.team]
         sa.team, sb.team = m.a.team, m.b.team
         for s, own, other in ((sa, m.a, m.b), (sb, m.b, m.a)):
@@ -268,11 +295,9 @@ def team_stats(matches: list[Match]) -> dict[str, Stats]:
             winner, loser = (sa, sb) if pw == m.a.team else (sb, sa)
             winner.p_wins += 1
             loser.p_losses += 1
-        result_a = 0.5 if pw is None else float(pw == m.a.team)
-        expected_a = 1 / (1 + 10 ** ((sb.elo - sa.elo) / 400))
-        delta = ELO_K * (result_a - expected_a)
-        sa.elo += delta
-        sb.elo -= delta
+    elo = elo_ratings(matches if history is None else history)
+    for s in stats.values():
+        s.elo = elo[s.team]
     return dict(stats)
 
 
@@ -283,6 +308,7 @@ VIEWS = {
     "won": lambda s: (-s.points_won,),
     "lost": lambda s: (-s.points_lost,),
     "loyal": lambda s: (-s.roi, -s.bet_profit),
+    "underrated": lambda s: (s.underrated is None, -(s.underrated or 0), -s.matches),
 }
 
 

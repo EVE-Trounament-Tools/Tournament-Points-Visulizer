@@ -44,6 +44,17 @@ class RankingsTest(unittest.TestCase):
         self.assertEqual(stats["A"].p_wins + stats["A"].p_losses, 0)
         self.assertAlmostEqual(stats["A"].elo, rankings.ELO_START)
 
+    def test_elo_is_all_time(self):
+        self.add(pred("m1", "2025-10-24T12:00:00Z", ("A", 300), ("B", 100), 0))  # earlier tournament
+        self.add(pred("m2", "2026-08-29T12:00:00Z", ("A", 100), ("C", 300), 1))
+        history = rankings.load_matches(self.conn)
+        latest = rankings.tournaments(history)[0].matches
+        everything = rankings.team_stats(history)
+        scoped = rankings.team_stats(latest, history)
+        self.assertNotIn("B", scoped)
+        self.assertEqual(scoped["A"].elo, everything["A"].elo)  # A's earlier win still counts
+        self.assertNotAlmostEqual(scoped["A"].elo, rankings.team_stats(latest)["A"].elo)
+
     def test_tournament_split_on_gap(self):
         self.add(pred("m1", "2025-10-24T12:00:00Z", ("A", 1), ("B", 2), 0))
         self.add(pred("m2", "2025-10-26T12:00:00Z", ("A", 1), ("C", 2), 0))

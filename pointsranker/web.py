@@ -22,6 +22,7 @@ VIEW_LABELS = {
     "won": "Points won",
     "lost": "Points lost",
     "loyal": "Loyal bettor",
+    "underrated": "Underrated",
 }
 
 CSS = """
@@ -336,6 +337,11 @@ METRICS: dict[str, list[Metric]] = {
               Metric("losses", "Actual losses", lambda s: s.losses, desc=False),
               Metric("upsets", "Upset wins", lambda s: s.upset_wins),
               Metric("best", "Best win", lambda s: s.best_win if s.wins else None)],
+    "underrated": [Metric("gap", "Underrated by", lambda s: s.underrated, fmt="pct"),
+                   Metric("win_pct", "Actual win %", lambda s: s.win_pct, fmt="pct"),
+                   Metric("p_pct", "Predicted win %", lambda s: s.p_win_pct, fmt="pct"),
+                   Metric("upsets", "Upset wins", lambda s: s.upset_wins),
+                   Metric("matches", "Matches", lambda s: s.matches)],
 }
 COLUMNS: dict[str, list[Column]] = {
     "perceived": [Column("Perceived W-L", lambda s: f"{s.p_wins}-{s.p_losses}"),
@@ -359,6 +365,12 @@ COLUMNS: dict[str, list[Column]] = {
               Column("Profit", lambda s: _signed(s.bet_profit, _fmt(abs(s.bet_profit))) if s.bets else "–"),
               Column("ROI", lambda s: _signed(s.roi, f"{abs(s.roi):.0%}") if s.bets else "–"),
               Column("Best win", lambda s: f"+{_fmt(s.best_win)}" if s.wins else "–")],
+    "underrated": [Column("Actual W-L", lambda s: f"{s.wins}-{s.losses}"),
+                   Column("Actual win %", lambda s: f"{s.win_pct:.0%}" if s.win_pct is not None else "–"),
+                   Column("Predicted W-L", lambda s: f"{s.p_wins}-{s.p_losses}"),
+                   Column("Predicted win %", lambda s: f"{s.p_win_pct:.0%}" if s.p_wins + s.p_losses else "–"),
+                   Column("Underrated by", lambda s: _signed(s.underrated, f"{abs(s.underrated) * 100:.0f} pts")
+                          if s.underrated is not None else "–")],
 }
 # Mirrors rankings.VIEWS, which gives the server-side (no-JS) order.
 DEFAULT_SORT = {
@@ -367,6 +379,7 @@ DEFAULT_SORT = {
     "won": "points_won:d",
     "lost": "points_lost:d",
     "loyal": "roi:d,profit:d",
+    "underrated": "gap:d,matches:d",
 }
 # Every metric, so any view can be filtered on any of them (e.g. matches played on "Points won").
 ALL_METRICS = list({m.key: m for ms in METRICS.values() for m in ms}.values())
@@ -454,13 +467,17 @@ PAGE_RE = re.compile(r"^/t/([\w-]+)/(\w+)/?$")
 VIEWS = [*VIEW_LABELS, "matches"]
 NOTES = {
     "perceived": "A team gets a perceived win when chat bet more channel points on it than on its "
-                 "opponent, whatever the real result. Elo runs over those perceived results in match order.",
+                 "opponent, whatever the real result. Elo runs over those perceived results in match order, "
+                 "across every tournament, so it's each team's all-time rating.",
     "bet": "Total channel points bet on the team across its matches.",
     "won": "Points the team's backers took from the opposing pool when the team actually won.",
     "lost": "Points the team's backers lost when the team actually lost.",
     "loyal": f"Profit from betting {rankings.STAKE:,} points on this team in every match it played. "
              f"Wins pay out at the match's real odds (upsets pay big, heavy-favourite wins pay little); "
              f"every loss costs the full {rankings.STAKE:,}.",
+    "underrated": "How much better a team actually did than chat expected: its actual win rate minus its "
+                  "predicted win rate (the share of its matches where chat bet more on it). Teams with few "
+                  "matches swing a lot; filter on Matches to hide them.",
     "matches": "Matches are numbered in order within their tournament. Bold team = crowd favourite "
                "(more points). Upset = favourite lost.",
 }
@@ -497,11 +514,11 @@ def _meta(title: str, desc: str, url: str, image: str | None) -> str:
     return "".join(f'<meta {a}="{k}" content="{escape(v)}">' for a, k, v in tags)
 
 
-def _preview(scoped: list[rankings.Match], view: str) -> tuple[str, str | None]:
+def _preview(scoped: list[rankings.Match], history: list[rankings.Match], view: str) -> tuple[str, str | None]:
     """(description, #1 team) for a page's link preview."""
     if not scoped:
         return "No matches recorded yet.", None
-    stats = rankings.team_stats(scoped)
+    stats = rankings.team_stats(scoped, history)
     top = rankings.ranked(stats, "perceived" if view == "matches" else view)
     upsets = sum(m.upset for m in scoped)
     decided = sum(1 for m in scoped if m.winner and m.perceived_winner)
@@ -538,9 +555,9 @@ def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], s
     elif view == "matches":
         body = _matches_table(scoped, rankings.match_info(tours), tour is None)
     else:
-        body = _ranking_table(rankings.team_stats(scoped), view)
+        body = _ranking_table(rankings.team_stats(scoped, all_matches), view)
     title = (tour.label + (f" · {stage.label}" if stage else "")) if tour else "All time"
-    desc, leader = _preview(scoped, view)
+    desc, leader = _preview(scoped, all_matches, view)
     base = base_url.rstrip("/")
     image = f"{base}/logo/{logo_slug(leader)}.png" if leader else None
     meta = _meta(f"{title} · {dict(VIEW_LABELS, matches='Matches')[view]}", desc, base + path, image)
