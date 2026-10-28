@@ -1,12 +1,15 @@
 """Local rankings website: stdlib HTTP server rendering pages straight from the DB."""
+import hashlib
 import logging
+import re
 import sqlite3
+from dataclasses import dataclass
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
-from . import rankings, teams
+from . import rankings
 
 log = logging.getLogger(__name__)
 
@@ -26,9 +29,10 @@ CSS = """
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:1000px;margin:0 auto;padding:24px 16px 48px}
 header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:end;justify-content:space-between;margin-bottom:18px}
-h1{font-size:22px;margin:0}
+h1{font-size:22px;margin:0}h1 a{color:inherit;text-decoration:none}
+.tours{margin:0 0 12px}.tours ul{margin:6px 0;padding-left:18px}.tours a{color:var(--accent)}
 .sub{color:var(--muted);font-size:13px}
-form select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
+header select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
 nav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
 nav a{padding:6px 12px;border-radius:999px;background:var(--chip);color:var(--fg);text-decoration:none;font-size:14px}
 nav a.on{background:var(--accent);color:var(--card)}
@@ -57,9 +61,19 @@ def _fmt(n: float) -> str:
     return f"{n:,.0f}"
 
 
+def logo_slug(name: str) -> str:
+    """Filesystem- and URL-safe logo file name, unique per team name."""
+    base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "team"
+    return f"{base}-{hashlib.md5(name.encode()).hexdigest()[:6]}"
+
+
+def page_url(tournament: str, view: str) -> str:
+    return f"/t/{tournament}/{view}/"
+
+
 def _team(name: str, bold: bool = False) -> str:
     cls = ' class="fav"' if bold else ""
-    return (f'<span class="team"><img src="/logo/{quote(name, safe="")}" alt="" loading="lazy">'
+    return (f'<span class="team"><img src="/logo/{logo_slug(name)}.png" alt="" loading="lazy">'
             f'<span{cls}>{escape(name)}</span></span>')
 
 
@@ -114,82 +128,121 @@ def _matches_table(matches: list[rankings.Match]) -> str:
     return f'<div class="card"><table>{head}{"".join(rows)}</table></div>'
 
 
-def render_page(conn: sqlite3.Connection, path: str, query: dict[str, str],
-                names: dict[str, str]) -> str:
-    matches = rankings.load_matches(conn)
-    tours = rankings.tournaments(matches, names)
-    t = query.get("t") or (tours[0].id if tours else "all")
+@dataclass
+class Response:
+    status: int
+    content_type: str
+    body: bytes
+    cache: str = "no-store"
+
+
+PAGE_RE = re.compile(r"^/t/([\w-]+)/(\w+)/?$")
+VIEWS = [*VIEW_LABELS, "matches"]
+NOTES = {
+    "perceived": "A team gets a perceived win when chat bet more channel points on it than on its "
+                 "opponent, whatever the real result. Elo runs over those perceived results in match order.",
+    "bet": "Total channel points bet on the team across its matches.",
+    "won": "Points the team's backers took from the opposing pool when the team actually won.",
+    "lost": "Points the team's backers lost when the team actually lost.",
+    "matches": "Bold team = crowd favourite (more points). Upset = favourite lost.",
+}
+
+
+def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], t: str, view: str) -> str:
     tour = next((x for x in tours if x.id == t), None)
-    if tour is None:
-        t = "all"
-    scoped = tour.matches if tour else matches
-    view = "matches" if path == "/matches" else query.get("view", "perceived")
-    if view not in VIEW_LABELS and view != "matches":
-        view = "perceived"
-
+    scoped = tour.matches if tour else all_matches
     options = [("all", "All time")] + [(x.id, f"{x.label} · {len(x.matches)} matches") for x in tours]
-    select = "".join(f'<option value="{escape(v)}"{" selected" if v == t else ""}>{escape(label)}</option>'
+    select = "".join(f'<option value="{page_url(v, view)}"{" selected" if v == t else ""}>{escape(label)}</option>'
                      for v, label in options)
-    tabs = "".join(f'<a href="/?t={quote(t)}&view={v}"{" class=on" if v == view else ""}>{label}</a>'
-                   for v, label in VIEW_LABELS.items())
-    tabs += f'<a href="/matches?t={quote(t)}"{" class=on" if view == "matches" else ""}>Matches</a>'
-
-    notes = {
-        "perceived": "A team gets a perceived win when chat bet more channel points on it than on its "
-                     "opponent, whatever the real result. Elo runs over those perceived results in match order.",
-        "bet": "Total channel points bet on the team across its matches.",
-        "won": "Points the team's backers took from the opposing pool when the team actually won.",
-        "lost": "Points the team's backers lost when the team actually lost.",
-        "matches": "Bold team = crowd favourite (more points). Upset = favourite lost.",
-    }
-    body = (_matches_table(scoped) if view == "matches" else _ranking_table(rankings.team_stats(scoped), view)) \
-        if scoped else '<div class="card empty">No matches recorded yet.</div>'
-    title = "All time" if tour is None else tour.label
+    links = "".join(f'<li><a href="{page_url(v, view)}">{escape(label)}</a></li>' for v, label in options)
+    tabs = "".join(f'<a href="{page_url(t, v)}"{" class=on" if v == view else ""}>{label}</a>'
+                   for v, label in [*VIEW_LABELS.items(), ("matches", "Matches")])
+    if not scoped:
+        body = '<div class="card empty">No matches recorded yet.</div>'
+    elif view == "matches":
+        body = _matches_table(scoped)
+    else:
+        body = _ranking_table(rankings.team_stats(scoped), view)
+    title = tour.label if tour else "All time"
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>pointsRanker · {escape(title)}</title><style>{CSS}</style></head><body><main>
-<header><div><h1>pointsRanker</h1><div class="sub">Team rankings from Twitch channel-point predictions</div></div>
-<form method="get" action="{'/matches' if view == 'matches' else '/'}">
-<input type="hidden" name="view" value="{escape(view)}">
-<select name="t" onchange="this.form.submit()" aria-label="Tournament">{select}</select>
-<noscript><button>Go</button></noscript></form></header>
-<nav>{tabs}</nav>{_summary(scoped)}<p class="note">{notes[view]}</p>{body}
+<header><div><h1><a href="/">pointsRanker</a></h1><div class="sub">Team rankings from Twitch channel-point predictions</div></div>
+<select onchange="location=this.value" aria-label="Tournament">{select}</select></header>
+<noscript><details class="tours"><summary>Tournaments</summary><ul>{links}</ul></details></noscript>
+<nav>{tabs}</nav>{_summary(scoped)}<p class="note">{NOTES[view]}</p>{body}
 </main></body></html>"""
+
+
+def page_paths(conn: sqlite3.Connection, names: dict[str, str]) -> list[str]:
+    """Every page path the site has, for the static build."""
+    tours = rankings.tournaments(rankings.load_matches(conn), names)
+    return ["/"] + [page_url(t, v) for t in ["all", *(x.id for x in tours)] for v in VIEWS]
+
+
+def logo_paths(conn: sqlite3.Connection) -> list[str]:
+    return [f"/logo/{logo_slug(r['name'])}.png" for r in conn.execute("SELECT name FROM teams")]
+
+
+def render(conn: sqlite3.Connection, path: str, names: dict[str, str]) -> Response | None:
+    """Render one site path, or None if there's no such page."""
+    if path.startswith("/logo/") and path.endswith(".png"):
+        slug = path[len("/logo/"):-len(".png")]
+        for r in conn.execute("SELECT name, logo FROM teams"):
+            if logo_slug(r["name"]) == slug:
+                return Response(200, "image/png", r["logo"], "public, max-age=86400")
+        return None
+    matches = rankings.load_matches(conn)
+    tours = rankings.tournaments(matches, names)
+    if path == "/":
+        t, view = (tours[0].id if tours else "all"), "perceived"
+    elif m := PAGE_RE.match(path):
+        t, view = m.groups()
+        if view not in VIEWS or (t != "all" and all(x.id != t for x in tours)):
+            return None
+    else:
+        return None
+    return Response(200, "text/html; charset=utf-8", _page(tours, matches, t, view).encode())
+
+
+def not_found_page() -> bytes:
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
+            f'content="width=device-width,initial-scale=1"><title>pointsRanker · Not found</title>'
+            f'<style>{CSS}</style></head><body><main><h1>Not found</h1>'
+            f'<p class="note">That page doesn\'t exist. <a href="/">Back to the rankings</a>.</p>'
+            f'</main></body></html>').encode()
 
 
 def make_handler(db_path: Path, names: dict[str, str]):
     class Handler(BaseHTTPRequestHandler):
-        def _connect(self) -> sqlite3.Connection:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-            conn.row_factory = sqlite3.Row
-            return conn
-
-        def _send(self, status: int, ctype: str, body: bytes, cache: str = "no-store") -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", cache)
+        def _send(self, r: Response) -> None:
+            self.send_response(r.status)
+            self.send_header("Content-Type", r.content_type)
+            self.send_header("Content-Length", str(len(r.body)))
+            self.send_header("Cache-Control", r.cache)
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(r.body)
 
         def do_GET(self) -> None:
             url = urlparse(self.path)
             query = {k: v[0] for k, v in parse_qs(url.query).items()}
+            if url.path in ("/", "/matches") and query:  # old ?t=&view= links
+                view = "matches" if url.path == "/matches" else query.get("view", "perceived")
+                self.send_response(301)
+                self.send_header("Location", page_url(query.get("t", "all"), view))
+                self.end_headers()
+                return
             try:
-                with self._connect() as conn:
-                    if url.path.startswith("/logo/"):
-                        row = conn.execute("SELECT logo FROM teams WHERE name = ?",
-                                           (unquote(url.path[6:]),)).fetchone()
-                        self._send(200, "image/png", row["logo"] if row else teams.DEFAULT_LOGO,
-                                   "public, max-age=3600")
-                    elif url.path in ("/", "/matches"):
-                        html = render_page(conn, url.path, query, names)
-                        self._send(200, "text/html; charset=utf-8", html.encode())
-                    else:
-                        self._send(404, "text/plain", b"not found")
+                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+                conn.row_factory = sqlite3.Row
+                try:
+                    r = render(conn, url.path, names)
+                finally:
+                    conn.close()
             except sqlite3.Error as e:
                 log.exception("request failed")
-                self._send(500, "text/plain", f"database error: {e}".encode())
+                r = Response(500, "text/plain", f"database error: {e}".encode())
+            self._send(r or Response(404, "text/html; charset=utf-8", not_found_page()))
 
         def log_message(self, fmt, *args):
             log.debug("%s " + fmt, self.address_string(), *args)

@@ -4,7 +4,7 @@ import signal
 import sqlite3
 import threading
 
-from . import db, teams, twitch
+from . import db, site, teams, twitch
 
 log = logging.getLogger(__name__)
 
@@ -14,20 +14,25 @@ POLL_OFFLINE = 120  # stream offline
 
 
 def record(conn: sqlite3.Connection, channel: str, pred: dict, overrides: dict[str, int],
-           stream_id: str | None = None) -> None:
+           stream_id: str | None = None) -> bool:
+    """Store a prediction; True if it just became RESOLVED."""
     names = teams.team_names_for(conn, pred, overrides)
     prev, _ = db.upsert_prediction(conn, channel, pred, names, stream_id)
     if prev != pred["status"]:
         log.info("prediction %s: %s -> %s  %r", pred["id"][:8], prev or "new", pred["status"], pred["title"])
+    return pred["status"] == "RESOLVED" and prev != "RESOLVED"
 
 
-def run(conn: sqlite3.Connection, channel: str, overrides: dict[str, int]) -> None:
+def run(conn: sqlite3.Connection, channel: str, overrides: dict[str, int],
+        publisher: "site.Publisher | None" = None) -> None:
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())
 
     was_live = None
     log.info("collecting predictions for %s (ctrl-c to stop)", channel)
+    if publisher:
+        publisher.request()  # bring the site in line with the DB at startup
     while not stop.is_set():
         try:
             state = twitch.fetch_live(channel)
@@ -45,11 +50,14 @@ def run(conn: sqlite3.Connection, channel: str, overrides: dict[str, int]) -> No
         # Resolved first so a prediction that ended between polls gets its final totals.
         for pred in state["resolved"] + state["active"]:
             try:
-                record(conn, channel, pred, overrides, stream_id)
+                if record(conn, channel, pred, overrides, stream_id) and publisher:
+                    publisher.request()
             except sqlite3.Error as e:
                 log.error("failed to store prediction %s: %s", pred["id"], e)
 
         stop.wait(POLL_ACTIVE if state["active"] else POLL_LIVE if live else POLL_OFFLINE)
+    if publisher:
+        publisher.stop()
     log.info("stopped")
 
 

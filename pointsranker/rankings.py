@@ -89,7 +89,7 @@ def load_matches(conn: sqlite3.Connection) -> list[Match]:
         FROM predictions p
         JOIN outcomes a ON a.prediction_id = p.id AND a.position = 0
         JOIN outcomes b ON b.prediction_id = p.id AND b.position = 1
-        WHERE a.team_name IS NOT NULL AND b.team_name IS NOT NULL AND a.team_name <> b.team_name
+        WHERE p.status = 'RESOLVED' AND a.team_name IS NOT NULL AND b.team_name IS NOT NULL AND a.team_name <> b.team_name
           AND (SELECT count(*) FROM outcomes o WHERE o.prediction_id = p.id) = 2
         ORDER BY p.created_at
     """).fetchall()

@@ -1,3 +1,6 @@
 data/
 __pycache__/
 *.egg-info/
+site/
+site.old/
+.site-*/

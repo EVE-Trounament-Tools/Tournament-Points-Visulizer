@@ -1,0 +1,7 @@
+# Static-only Worker serving the built rankings site (python -m pointsranker publish).
+name = "pointsranker"
+compatibility_date = "2025-09-01"
+
+[assets]
+directory = "../site"
+not_found_handling = "404-page"

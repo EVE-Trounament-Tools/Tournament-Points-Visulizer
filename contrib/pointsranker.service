@@ -7,7 +7,8 @@ After=network-online.target
 
 [Service]
 WorkingDirectory=%h/dev/eve/pointsRanker
-ExecStart=/usr/bin/env python3 -m pointsranker run
+ExecStart=/usr/bin/env python3 -m pointsranker run --publish
+# wrangler uses the login saved by `npx wrangler login`; or set Environment=CLOUDFLARE_API_TOKEN=...
 Restart=on-failure
 RestartSec=30
 
