@@ -1,6 +1,8 @@
+import json
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from pointsranker import db, teams
@@ -53,6 +55,54 @@ class SideTest(unittest.TestCase):
                                             ["Seker Matar", "Seriously Suspicious"]),
                          ["Seriously Suspicious", "Seker Matar"])
         self.assertIsNone(teams.parse_sides("ATXX Finals Match 1 Outcome"))
+
+    def test_same_team_spellings(self):
+        self.assertTrue(teams.same_team("Barcode", "BARCODE"))
+        self.assertTrue(teams.same_team("Yabbiy's Baddies", "Yabbiy’s Baddies"))
+        self.assertTrue(teams.same_team("Spooky Action at a Distan", "Spooky Action at a Dist."))
+        self.assertFalse(teams.same_team("V0LTA", "V0LTB"))
+        self.assertFalse(teams.same_team("No Local", "No Numbers"))  # short prefix isn't enough
+
+
+class OverrideTest(unittest.TestCase):
+    def test_name_override_merges_teams(self):
+        conn = db.connect(Path(tempfile.mkdtemp()) / "t.db")
+        overrides = {"usecodewizard": "Catlas Tor UseCodeWIZARD", "catlas tor": "Catlas Tor UseCodeWIZARD",
+                     "loop a": "Loop B", "loop b": "Loop A"}
+        with mock.patch.object(teams, "lookup_alliance", return_value=None):
+            names = {a: teams.ensure_team(conn, a, overrides)
+                     for a in ("UseCodeWIZARD", "Catlas Tor", "CatlasTor UseCodeWIZARD", "Loop A")}
+        self.assertEqual(set(list(names.values())[:3]), {"Catlas Tor UseCodeWIZARD"})
+        self.assertIn(names["Loop A"], ("Loop A", "Loop B"))  # a loop falls back, doesn't hang
+
+    def test_override_target_wins_over_more_used_spelling(self):
+        conn = db.connect(Path(tempfile.mkdtemp()) / "t.db")
+        with mock.patch.object(teams, "lookup_alliance", return_value=None):
+            self.assertEqual(teams.ensure_team(conn, "xqty", {}), "xqty")  # seen first, no overrides
+            overrides = {"xqties": "XQTY"}
+            got = {a: teams.ensure_team(conn, a, overrides, force=True)
+                   for a in ("xqty", "XQTY", "xqty[...]", "xqties")}
+        self.assertEqual(set(got.values()), {"XQTY"})
+
+    def test_group_takes_the_name_of_its_alliance_with_a_logo(self):
+        conn = db.connect(Path(tempfile.mkdtemp()) / "t.db")
+        bars = "I" * 25
+        overrides = {bars.lower(): "Barcode"}
+        lookup = lambda *names: (99012243, bars) if any(n.lower() == bars.lower() for n in names) else None
+        with mock.patch.object(teams, "lookup_alliance", side_effect=lookup), \
+                mock.patch.object(teams, "alliance_logo", return_value=(b"logo", False)), \
+                mock.patch.object(teams, "evewho_name", return_value=bars):
+            got = {a: teams.ensure_team(conn, a, overrides) for a in ("Barcode", "BARCODE", bars)}
+        self.assertEqual(set(got.values()), {bars})
+        team = db.get_team(conn, bars)
+        self.assertEqual((team["eve_id"], team["logo_is_default"]), (99012243, 0))
+
+    def test_lookup_prefers_alliance_with_its_own_logo(self):
+        esi = json.dumps({"alliances": [{"id": 1, "name": "Plain"}, {"id": 2, "name": "Fancy"}]}).encode()
+        logos = {1: (teams.DEFAULT_LOGO, True), 2: (b"art", False)}
+        with mock.patch.object(teams, "_http", return_value=esi), \
+                mock.patch.object(teams, "alliance_logo", side_effect=logos.get):
+            self.assertEqual(teams.lookup_alliance("Plain", "Fancy"), (2, "Fancy"))
 
 
 if __name__ == "__main__":

@@ -83,13 +83,28 @@ def _http(url: str, data: bytes | None = None) -> bytes:
         return r.read()
 
 
-def lookup_alliance(name: str) -> tuple[int, str] | None:
-    """(alliance id, canonical name) via ESI exact (case-insensitive) name match."""
-    variants = list(dict.fromkeys([name, name.rstrip("."), name.rstrip(".") + "."]))
+_logos: dict[int, tuple[bytes, bool]] = {}  # alliance id -> (logo, is the default logo)
+
+
+def alliance_logo(eve_id: int) -> tuple[bytes, bool]:
+    if eve_id not in _logos:
+        fetched = _http(LOGO_URL.format(id=eve_id))
+        default = hashlib.md5(fetched).hexdigest() == DEFAULT_LOGO_MD5
+        _logos[eve_id] = (DEFAULT_LOGO, True) if default else (fetched, False)
+    return _logos[eve_id]
+
+
+def lookup_alliance(*names: str) -> tuple[int, str] | None:
+    """(alliance id, canonical name) for the first of `names` ESI knows as an alliance
+    (exact, case-insensitive), preferring one with its own logo over the default."""
+    variants = list(dict.fromkeys(v for n in names for v in (n, n.rstrip("."), n.rstrip(".") + ".")))
     data = json.loads(_http(ESI_IDS, json.dumps(variants).encode()))
-    for a in data.get("alliances", []):
-        return a["id"], a["name"]
-    return None
+    by_name = {a["name"].lower(): a for a in data.get("alliances", [])}
+    found = list({a["id"]: a for v in variants if (a := by_name.get(v.lower()))}.values())
+    if not found:
+        return None
+    best = next((a for a in found if not alliance_logo(a["id"])[1]), found[0])
+    return best["id"], best["name"]
 
 
 def match_known(conn: sqlite3.Connection, name: str) -> tuple[int, str] | None:
@@ -104,12 +119,36 @@ def match_known(conn: sqlite3.Connection, name: str) -> tuple[int, str] | None:
     return None
 
 
+TRUNCATED_MIN = 12  # Twitch cuts outcome names at 25 chars; a shared prefix this long is the same team
+
+
+def same_team(a: str, b: str) -> bool:
+    """Spellings of one team: equal ignoring case, spaces and punctuation ("Barcode" /
+    "BARCODE"), or one cut off from the other ("Spooky Action at a Distan" / "...a Dist.")."""
+    a, b = _norm(a), _norm(b)
+    if not a or not b:
+        return False
+    return a == b or min(len(a), len(b)) >= TRUNCATED_MIN and (a.startswith(b) or b.startswith(a))
+
+
+def match_unresolved(conn: sqlite3.Connection, name: str) -> str | None:
+    """An unresolved team this name is a spelling of; the most-used spelling wins."""
+    for row in conn.execute("""
+            SELECT t.name FROM teams t LEFT JOIN outcomes o ON o.team_name = t.name
+            WHERE t.eve_id IS NULL GROUP BY t.name ORDER BY count(o.id) DESC, t.name"""):
+        if same_team(name, row["name"]):
+            return row["name"]
+    return None
+
+
 def evewho_name(alliance_id: int) -> str | None:
     info = json.loads(_http(EVEWHO_API.format(id=alliance_id))).get("info") or []
     return info[0]["name"] if info else None
 
 
-def load_overrides(path: Path | None) -> dict[str, int]:
+def load_overrides(path: Path | None) -> dict[str, int | str]:
+    """teams_overrides.json: name as written in predictions -> either an alliance id (for names
+    ESI can't resolve) or another team name (the same team under a very different name)."""
     if path and path.exists():
         return {k.lower(): v for k, v in json.loads(path.read_text()).items()}
     return {}
@@ -120,34 +159,60 @@ def _older_than(ts: str, age: timedelta) -> bool:
 
 
 def _save_logo(conn: sqlite3.Connection, name: str, eve_id: int | None, url: str | None) -> None:
-    logo, is_default = DEFAULT_LOGO, True
-    if eve_id:
-        fetched = _http(LOGO_URL.format(id=eve_id))
-        if hashlib.md5(fetched).hexdigest() != DEFAULT_LOGO_MD5:
-            logo, is_default = fetched, False
+    logo, is_default = alliance_logo(eve_id) if eve_id else (DEFAULT_LOGO, True)
     db.save_team(conn, name, eve_id, "alliance" if eve_id else None, url, logo, is_default)
     log.info("team %r -> %s%s", name, eve_id or "unresolved", " (default logo)" if is_default else "")
 
 
-def ensure_team(conn: sqlite3.Connection, alias: str, overrides: dict[str, int],
+def _group(alias: str, overrides: dict[str, int | str]) -> tuple[str | None, list[str]]:
+    """(override target, every name known to be that team) for `alias`.
+
+    Override targets are canonical: names mapped to them, and other spellings of them
+    ("xqty" for "XQTY"), belong to their group. Returns (None, [alias]) for other names."""
+    targets = sorted({t.strip() for t in overrides.values() if isinstance(t, str)})
+    target = overrides.get(alias.lower())
+    if isinstance(target, str):
+        canon = target.strip()
+        for _ in range(5):  # follow A -> B -> C; a loop just stops somewhere
+            nxt = overrides.get(canon.lower())
+            if not isinstance(nxt, str) or nxt.strip().lower() == canon.lower():
+                break
+            canon = nxt.strip()
+    elif alias.strip() in targets:
+        canon = alias.strip()
+    else:
+        canon = next((t for t in targets if same_team(alias, t)), None)
+    if canon is None:
+        return None, [alias]
+    members = [canon, *(k for k, v in overrides.items() if isinstance(v, str) and v.strip() == canon), alias]
+    return canon, list(dict.fromkeys(members))
+
+
+def ensure_team(conn: sqlite3.Connection, alias: str, overrides: dict[str, int | str],
                 force: bool = False) -> str:
     """Resolve a name from a prediction title to a stored team; returns the team name.
 
-    Resolved teams are stored under their canonical alliance name, so spelling
-    variants ("PUNISHING GRAY RAVEN", "Punishing Gray Raven") share one row.
+    Resolved teams are stored under their canonical alliance name, so spelling variants
+    ("PUNISHING GRAY RAVEN", "Punishing Gray Raven") share one row. When several names are
+    the same team (overrides), every one of them is looked up and the team takes the name of
+    the alliance with its own logo, e.g. Barcode is the alliance "IIIIIIIIIIIIIIIIIIIIIIIII".
     """
     row = db.get_alias(conn, alias)
     if row and not force and (row["eve_id"] or not _older_than(row["checked_at"], RETRY_AFTER)):
         team = db.get_team(conn, row["team_name"])
         if not (team["logo_is_default"] and _older_than(team["resolved_at"], RETRY_AFTER)):
             return row["team_name"]
+    canon, members = _group(alias, overrides)
     try:
-        eve_id = overrides.get(alias.lower())
-        if eve_id:
-            found = (eve_id, evewho_name(eve_id) or alias)
+        ids = [v for m in members if isinstance(v := overrides.get(m.lower()), int)]
+        if ids:
+            found = (ids[0], evewho_name(ids[0]) or canon or alias)
         else:
-            found = lookup_alliance(alias) or match_known(conn, alias)
-        eve_id, name = found if found else (None, alias)
+            found = lookup_alliance(*members) or (None if canon else match_known(conn, alias))
+        if found:
+            eve_id, name = found
+        else:
+            eve_id, name = None, canon or match_unresolved(conn, alias) or alias
         team = db.get_team(conn, name)
         if force or team is None or (team["logo_is_default"] and _older_than(team["resolved_at"], RETRY_AFTER)):
             _save_logo(conn, name, eve_id, EVEWHO_PAGE.format(id=eve_id) if eve_id else None)
@@ -155,14 +220,14 @@ def ensure_team(conn: sqlite3.Connection, alias: str, overrides: dict[str, int],
         log.warning("team lookup for %r failed: %s", alias, e)
         if row:
             return row["team_name"]
-        name = alias
+        name = canon or alias
         if db.get_team(conn, name) is None:
             db.save_team(conn, name, None, None, None, DEFAULT_LOGO, True)
     db.save_alias(conn, alias, name)
     return name
 
 
-def team_names_for(conn: sqlite3.Connection, pred: dict, overrides: dict[str, int]) -> dict[str, str | None]:
+def team_names_for(conn: sqlite3.Connection, pred: dict, overrides: dict[str, int | str]) -> dict[str, str | None]:
     """outcome id -> team name, resolving any new teams along the way."""
     sides = parse_sides(pred["title"])
     titles = [o["title"] for o in pred["outcomes"]]
@@ -176,7 +241,7 @@ def team_names_for(conn: sqlite3.Connection, pred: dict, overrides: dict[str, in
             for o, side in zip(pred["outcomes"], matched)}
 
 
-def refresh_all(conn: sqlite3.Connection, overrides: dict[str, int]) -> None:
+def refresh_all(conn: sqlite3.Connection, overrides: dict[str, int | str]) -> None:
     """Re-resolve every known name (e.g. after editing overrides), re-point stored
     outcomes at the result and drop teams nothing refers to any more."""
     for (alias,) in conn.execute("SELECT alias FROM team_aliases").fetchall():

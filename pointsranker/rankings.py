@@ -15,6 +15,7 @@ from pathlib import Path
 
 ELO_START = 1500.0
 ELO_K = 32.0
+STAKE = 1000  # channel points a "loyal bettor" puts on their team every match
 STAGE_GAP = timedelta(days=14)    # a longer break between matches starts a new stage
 FINALS_GAP = timedelta(days=75)   # a stage starting within this of the previous one's end belongs
                                   # to the same tournament (feeders -> finals are 1-2 months apart)
@@ -84,6 +85,10 @@ class Stats:
     points_lost: int = 0
     wins: int = 0
     losses: int = 0
+    bets: int = 0          # matches with a result, each backed with STAKE
+    bet_profit: float = 0.0
+    best_win: float = 0.0  # largest single net payout
+    upset_wins: int = 0    # actual wins with the smaller pool
 
     @property
     def p_win_pct(self) -> float:
@@ -93,6 +98,16 @@ class Stats:
     @property
     def avg_share(self) -> float:
         return self.share_sum / self.matches if self.matches else 0.0
+
+    @property
+    def roi(self) -> float:
+        return self.bet_profit / (self.bets * STAKE) if self.bets else 0.0
+
+
+def bet_return(own: int, total: int, won: bool, stake: int = STAKE) -> float:
+    """Net result of betting `stake` on a side with pool `own` out of `total`. Twitch pays
+    winners the whole pool in proportion to their stake; the bet joins the pool itself."""
+    return stake * (total + stake) / (own + stake) - stake if won else -stake
 
 
 def load_matches(conn: sqlite3.Connection) -> list[Match]:
@@ -208,9 +223,15 @@ def team_stats(matches: list[Match]) -> dict[str, Stats]:
             if m.winner == own.team:
                 s.wins += 1
                 s.points_won += other.points
+                s.upset_wins += own.points < other.points
             elif m.winner == other.team:
                 s.losses += 1
                 s.points_lost += own.points
+            if m.winner:
+                net = bet_return(own.points, m.total, m.winner == own.team)
+                s.bets += 1
+                s.bet_profit += net
+                s.best_win = max(s.best_win, net)
 
         pw = m.perceived_winner
         if pw:
@@ -231,6 +252,7 @@ VIEWS = {
     "bet": lambda s: (-s.points_bet,),
     "won": lambda s: (-s.points_won,),
     "lost": lambda s: (-s.points_lost,),
+    "loyal": lambda s: (-s.roi, -s.bet_profit),
 }
 
 

@@ -20,6 +20,7 @@ VIEW_LABELS = {
     "bet": "Points bet",
     "won": "Points won",
     "lost": "Points lost",
+    "loyal": "Loyal bettor",
 }
 
 CSS = """
@@ -197,6 +198,13 @@ class Column:
     show: Callable[[rankings.Stats], str]
 
 
+def _signed(v: float, text: str) -> str:
+    """Coloured +/− figure; `text` is the formatted magnitude."""
+    if round(v, 6) == 0:
+        return text
+    return f'<span class="{"w" if v > 0 else "l"}">{"+" if v > 0 else "−"}{text}</span>'
+
+
 def _per(total: float, n: int) -> float | None:
     return total / n if n else None
 
@@ -221,6 +229,13 @@ METRICS: dict[str, list[Metric]] = {
     "lost": [Metric("points_lost", "Points lost", lambda s: s.points_lost),
              Metric("losses", "Actual losses", lambda s: s.losses),
              Metric("lost_avg", "Avg / loss", lambda s: _per(s.points_lost, s.losses))],
+    "loyal": [Metric("roi", "ROI", lambda s: s.roi if s.bets else None),
+              Metric("profit", "Profit", lambda s: s.bet_profit if s.bets else None),
+              Metric("bets", "Bets", lambda s: s.bets),
+              Metric("wins", "Actual wins", lambda s: s.wins),
+              Metric("losses", "Actual losses", lambda s: s.losses, desc=False),
+              Metric("upsets", "Upset wins", lambda s: s.upset_wins),
+              Metric("best", "Best win", lambda s: s.best_win if s.wins else None)],
 }
 COLUMNS: dict[str, list[Column]] = {
     "perceived": [Column("Perceived W-L", lambda s: f"{s.p_wins}-{s.p_losses}"),
@@ -238,6 +253,12 @@ COLUMNS: dict[str, list[Column]] = {
     "lost": [Column("Points lost", lambda s: _fmt(s.points_lost)),
              Column("Actual losses", lambda s: str(s.losses)),
              Column("Avg / loss", lambda s: _fmt(s.points_lost / s.losses) if s.losses else "–")],
+    "loyal": [Column("Bets", lambda s: str(s.bets)),
+              Column("W-L", lambda s: f"{s.wins}-{s.losses}"),
+              Column("Upset wins", lambda s: str(s.upset_wins)),
+              Column("Profit", lambda s: _signed(s.bet_profit, _fmt(abs(s.bet_profit))) if s.bets else "–"),
+              Column("ROI", lambda s: _signed(s.roi, f"{abs(s.roi):.0%}") if s.bets else "–"),
+              Column("Best win", lambda s: f"+{_fmt(s.best_win)}" if s.wins else "–")],
 }
 # Mirrors rankings.VIEWS, which gives the server-side (no-JS) order.
 DEFAULT_SORT = {
@@ -245,6 +266,7 @@ DEFAULT_SORT = {
     "bet": "points_bet:d",
     "won": "points_won:d",
     "lost": "points_lost:d",
+    "loyal": "roi:d,profit:d",
 }
 
 
@@ -303,6 +325,9 @@ NOTES = {
     "bet": "Total channel points bet on the team across its matches.",
     "won": "Points the team's backers took from the opposing pool when the team actually won.",
     "lost": "Points the team's backers lost when the team actually lost.",
+    "loyal": f"Profit from betting {rankings.STAKE:,} points on this team in every match it played. "
+             f"Wins pay out at the match's real odds (upsets pay big, heavy-favourite wins pay little); "
+             f"every loss costs the full {rankings.STAKE:,}.",
     "matches": "Bold team = crowd favourite (more points). Upset = favourite lost.",
 }
 

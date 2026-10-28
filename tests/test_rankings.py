@@ -69,6 +69,26 @@ class RankingsTest(unittest.TestCase):
         self.assertEqual(len(at.matches), 3)
         self.assertEqual([s.label for s in tours[0].stages], [None])
 
+    def test_loyal_bettor_rewards_upsets_and_penalises_losses(self):
+        # A wins as a 90% favourite, then C (10% underdog) upsets B, then A loses.
+        self.add(pred("m1", "2026-09-13T21:00:00Z", ("A", 900_000), ("B", 100_000), winner=0))
+        self.add(pred("m2", "2026-09-13T22:00:00Z", ("C", 100_000), ("B", 900_000), winner=0))
+        self.add(pred("m3", "2026-09-13T23:00:00Z", ("A", 500_000), ("C", 500_000), winner=1))
+        stats = rankings.team_stats(rankings.load_matches(self.conn))
+        a, c = stats["A"], stats["C"]
+        fav_win = rankings.bet_return(900_000, 1_000_000, True)
+        dog_win = rankings.bet_return(100_000, 1_000_000, True)
+        self.assertAlmostEqual(fav_win / rankings.STAKE, 0.111, places=3)
+        self.assertAlmostEqual(dog_win / rankings.STAKE, 8.91, places=2)
+        self.assertEqual(rankings.bet_return(500_000, 1_000_000, False), -rankings.STAKE)
+        self.assertEqual((a.bets, c.bets, a.upset_wins, c.upset_wins), (2, 2, 0, 1))
+        self.assertAlmostEqual(a.bet_profit, fav_win - rankings.STAKE)  # the loss outweighs the safe win
+        self.assertAlmostEqual(c.best_win, dog_win)
+        self.assertAlmostEqual(c.roi, (dog_win + rankings.bet_return(500_000, 1_000_000, True))
+                               / (2 * rankings.STAKE))
+        self.assertEqual([s.team for s in rankings.ranked(stats, "loyal")], ["C", "A", "B"])
+        self.assertEqual(rankings.bet_return(0, 50_000, True), 50_000)  # nobody else backed it
+
     def test_ranked_views(self):
         self.add(pred("m1", "2026-09-13T21:00:00Z", ("A", 300), ("B", 100), winner=0))
         self.add(pred("m2", "2026-09-13T22:00:00Z", ("C", 50), ("B", 400), winner=0))

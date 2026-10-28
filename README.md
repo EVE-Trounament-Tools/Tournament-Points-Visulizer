@@ -35,8 +35,13 @@ Data lives in `data/predictions.db`. Two optional JSON files in the repo root tu
   label, e.g. `"Feeders"`) and `new_tournament: true` (stop this stage joining the previous
   tournament). Stages without a label are named from their titles (Feeders/Trials/Prelims),
   and the last one is named Finals.
-- `teams_overrides.json`: alliance ids for team names ESI can't resolve
-  (`{"Lazerhawks": 99001234}`). Run `teams --refresh` after editing it.
+- `teams_overrides.json`: fixes for team names, keyed by the name as written in predictions
+  (case-insensitive). Run `python -m pointsranker teams --refresh`, then `publish`, after
+  editing it.
+  - An alliance id, for a name ESI can't resolve: `"Lazerhawks": 99001234`.
+  - Another team's name, to merge two names for the same team: `"UseCodeWIZARD": "Catlas Tor UseCodeWIZARD"`.
+    Spellings that differ only in case, spacing or punctuation, or that are cut off at Twitch's
+    25-character limit, are merged automatically.
 
 ## Hosting
 

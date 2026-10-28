@@ -13,7 +13,7 @@ POLL_LIVE = 30      # stream live, no prediction
 POLL_OFFLINE = 120  # stream offline
 
 
-def record(conn: sqlite3.Connection, channel: str, pred: dict, overrides: dict[str, int],
+def record(conn: sqlite3.Connection, channel: str, pred: dict, overrides: dict[str, int | str],
            stream_id: str | None = None) -> bool:
     """Store a prediction; True if it just became RESOLVED."""
     names = teams.team_names_for(conn, pred, overrides)
@@ -23,7 +23,7 @@ def record(conn: sqlite3.Connection, channel: str, pred: dict, overrides: dict[s
     return pred["status"] == "RESOLVED" and prev != "RESOLVED"
 
 
-def run(conn: sqlite3.Connection, channel: str, overrides: dict[str, int],
+def run(conn: sqlite3.Connection, channel: str, overrides: dict[str, int | str],
         publisher: "site.Publisher | None" = None) -> None:
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -61,7 +61,7 @@ def run(conn: sqlite3.Connection, channel: str, overrides: dict[str, int],
     log.info("stopped")
 
 
-def backfill(conn: sqlite3.Connection, channel: str, overrides: dict[str, int],
+def backfill(conn: sqlite3.Connection, channel: str, overrides: dict[str, int | str],
              since: str | None = None) -> int:
     n = 0
     for pred in twitch.iter_resolved(channel):
