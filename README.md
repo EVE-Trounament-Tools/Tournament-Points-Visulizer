@@ -74,4 +74,11 @@ during a stream, nothing is lost for the rankings: Twitch keeps resolved predict
 next start (or `backfill`) picks them up. Only the mid-prediction point snapshots are missed.
 
 The prediction data comes from Twitch's web GraphQL API (the one twitch.tv itself uses). It is
-undocumented and could change without notice.
+unofficial and undocumented, is not endorsed by Twitch, and could change or stop working without notice.
+
+## License
+
+The code is MIT-licensed (see `LICENSE`). EVE Online and the EVE logo are the registered
+trademarks of CCP hf. The alliance logos, including `pointsranker/assets/default_alliance_logo.png`,
+are © CCP hf. and are not covered by the MIT license. This project is not affiliated with or
+endorsed by CCP hf. or Twitch.

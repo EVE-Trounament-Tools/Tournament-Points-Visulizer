@@ -4,3 +4,4 @@ __pycache__/
 site/
 site.old/
 .site-*/
+.wrangler/

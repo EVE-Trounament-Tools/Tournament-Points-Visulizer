@@ -6,6 +6,7 @@ Description=Record Twitch channel-point predictions (pointsRanker)
 After=network-online.target
 
 [Service]
+# Edit WorkingDirectory to wherever you cloned the repo.
 WorkingDirectory=%h/dev/eve/pointsRanker
 ExecStart=/usr/bin/env python3 -m pointsranker run --publish
 # wrangler uses the login saved by `npx wrangler login`; or set Environment=CLOUDFLARE_API_TOKEN=...

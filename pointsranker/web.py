@@ -68,7 +68,11 @@ td.rank{color:var(--muted);width:1%}
 .sorter button.rm{background:transparent;color:var(--muted);padding:3px 6px}
 .sorter button.add{background:transparent;border:1px dashed var(--line);color:var(--accent)}
 .sorter button.reset{background:transparent;color:var(--muted);text-decoration:underline}
+footer{margin-top:28px;color:var(--muted);font-size:12px}
 """
+
+FOOTER = ("<footer>EVE Online and the EVE logo are the registered trademarks of CCP hf. Alliance logos "
+          "are © CCP hf. This site is not affiliated with or endorsed by CCP hf. or Twitch.</footer>")
 
 # Client-side multi-level sorting for ranking tables. The sort lives in the URL hash
 # (#sort=elo:d,points_bet:a) so sorted views can be shared, and is carried over to links
@@ -379,7 +383,7 @@ def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], s
 <select onchange="location=this.value" aria-label="Tournament">{select}</select></header>
 <noscript><details class="tours"><summary>Tournaments</summary><ul>{links}</ul></details></noscript>
 {stages}<nav>{tabs}</nav>{_summary(scoped)}<p class="note">{NOTES[view]}</p>{body}
-</main></body></html>"""
+{FOOTER}</main></body></html>"""
 
 
 def _scopes(tours: list[rankings.Tournament]) -> list[str]:
@@ -423,7 +427,7 @@ def not_found_page() -> bytes:
             f'content="width=device-width,initial-scale=1"><title>pointsRanker · Not found</title>'
             f'<style>{CSS}</style></head><body><main><h1>Not found</h1>'
             f'<p class="note">That page doesn\'t exist. <a href="/">Back to the rankings</a>.</p>'
-            f'</main></body></html>').encode()
+            f'{FOOTER}</main></body></html>').encode()
 
 
 def make_handler(db_path: Path, names: dict):
