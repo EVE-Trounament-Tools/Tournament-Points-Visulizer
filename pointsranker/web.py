@@ -482,7 +482,41 @@ def _tour_option(t: rankings.Tournament) -> str:
     return f"{t.label}{stage} · {len(t.matches)} matches"
 
 
-def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], scope: str, view: str) -> str:
+SITE_NAME = "Twitch Points Ranker"
+SITE_URL = "https://pointsranker.ackbad-tournament-tools.workers.dev"  # absolute URLs in link previews
+
+
+def _meta(title: str, desc: str, url: str, image: str | None) -> str:
+    """Link-preview tags (Discord, Slack, etc. read Open Graph; theme-color tints Discord's embed)."""
+    tags = [("name", "description", desc), ("property", "og:site_name", SITE_NAME),
+            ("property", "og:type", "website"), ("property", "og:title", title),
+            ("property", "og:description", desc), ("property", "og:url", url),
+            ("name", "twitter:card", "summary"), ("name", "theme-color", "#2f6fde")]
+    if image:
+        tags.append(("property", "og:image", image))
+    return "".join(f'<meta {a}="{k}" content="{escape(v)}">' for a, k, v in tags)
+
+
+def _preview(scoped: list[rankings.Match], view: str) -> tuple[str, str | None]:
+    """(description, #1 team) for a page's link preview."""
+    if not scoped:
+        return "No matches recorded yet.", None
+    stats = rankings.team_stats(scoped)
+    top = rankings.ranked(stats, "perceived" if view == "matches" else view)
+    upsets = sum(m.upset for m in scoped)
+    decided = sum(1 for m in scoped if m.winner and m.perceived_winner)
+    line = f"{_fmt(len(scoped))} matches · {_fmt(sum(m.total for m in scoped))} points wagered" + (
+        f" · {upsets / decided:.0%} upsets" if decided else "")
+    if view == "matches":
+        m = scoped[-1]
+        lead = f"Latest: {m.a.team} vs {m.b.team}" + (f", {m.winner} won" if m.winner else "")
+    else:
+        lead = " · ".join(f"{i}. {s.team}" for i, s in enumerate(top[:3], 1))
+    return f"{lead} — {line}", top[0].team
+
+
+def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], scope: str, view: str,
+          path: str = "/", base_url: str = SITE_URL) -> str:
     tour, stage = _scope(tours, scope)
     scoped = stage.matches if stage else tour.matches if tour else all_matches
     current = tour.id if tour else "all"
@@ -506,10 +540,14 @@ def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], s
     else:
         body = _ranking_table(rankings.team_stats(scoped), view)
     title = (tour.label + (f" · {stage.label}" if stage else "")) if tour else "All time"
+    desc, leader = _preview(scoped, view)
+    base = base_url.rstrip("/")
+    image = f"{base}/logo/{logo_slug(leader)}.png" if leader else None
+    meta = _meta(f"{title} · {dict(VIEW_LABELS, matches='Matches')[view]}", desc, base + path, image)
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Twitch Points Ranker · {escape(title)}</title><style>{CSS}</style></head><body><main>
-<header><div><h1><a href="/">Twitch Points Ranker</a></h1><div class="sub">Team rankings from Twitch channel-point predictions</div></div>
+<title>{SITE_NAME} · {escape(title)}</title>{meta}<style>{CSS}</style></head><body><main>
+<header><div><h1><a href="/">{SITE_NAME}</a></h1><div class="sub">Team rankings from Twitch channel-point predictions</div></div>
 <select onchange="location=this.value" aria-label="Tournament">{select}</select></header>
 <noscript><details class="tours"><summary>Tournaments</summary><ul>{links}</ul></details></noscript>
 {stages}<nav>{tabs}</nav>{_summary(scoped)}<p class="note">{NOTES[view]}</p>{body}
@@ -531,7 +569,7 @@ def logo_paths(conn: sqlite3.Connection) -> list[str]:
     return [f"/logo/{logo_slug(r['name'])}.png" for r in conn.execute("SELECT name FROM teams")]
 
 
-def render(conn: sqlite3.Connection, path: str, names: dict) -> Response | None:
+def render(conn: sqlite3.Connection, path: str, names: dict, base_url: str = SITE_URL) -> Response | None:
     """Render one site path, or None if there's no such page."""
     if path.startswith("/logo/") and path.endswith(".png"):
         slug = path[len("/logo/"):-len(".png")]
@@ -549,18 +587,18 @@ def render(conn: sqlite3.Connection, path: str, names: dict) -> Response | None:
             return None
     else:
         return None
-    return Response(200, "text/html; charset=utf-8", _page(tours, matches, t, view).encode())
+    return Response(200, "text/html; charset=utf-8", _page(tours, matches, t, view, path, base_url).encode())
 
 
 def not_found_page() -> bytes:
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
-            f'content="width=device-width,initial-scale=1"><title>Twitch Points Ranker · Not found</title>'
-            f'<style>{CSS}</style></head><body><main><h1>Not found</h1>'
+            f'content="width=device-width,initial-scale=1"><title>{SITE_NAME} · Not found</title>'
+            f'<meta property="og:site_name" content="{SITE_NAME}"><style>{CSS}</style></head><body><main><h1>Not found</h1>'
             f'<p class="note">That page doesn\'t exist. <a href="/">Back to the rankings</a>.</p>'
             f'{FOOTER}</main></body></html>').encode()
 
 
-def make_handler(db_path: Path, names: dict):
+def make_handler(db_path: Path, names: dict, base_url: str = SITE_URL):
     class Handler(BaseHTTPRequestHandler):
         def _send(self, r: Response) -> None:
             self.send_response(r.status)
@@ -583,7 +621,7 @@ def make_handler(db_path: Path, names: dict):
                 conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
                 conn.row_factory = sqlite3.Row
                 try:
-                    r = render(conn, url.path, names)
+                    r = render(conn, url.path, names, base_url)
                 finally:
                     conn.close()
             except sqlite3.Error as e:
@@ -598,7 +636,7 @@ def make_handler(db_path: Path, names: dict):
 
 
 def serve(db_path: Path, host: str, port: int, names: dict) -> None:
-    server = ThreadingHTTPServer((host, port), make_handler(db_path.resolve(), names))
+    server = ThreadingHTTPServer((host, port), make_handler(db_path.resolve(), names, f"http://{host}:{port}"))
     log.info("serving rankings on http://%s:%d", host, port)
     try:
         server.serve_forever()

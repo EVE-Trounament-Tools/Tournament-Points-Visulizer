@@ -55,7 +55,8 @@ One-time setup:
 2. `python -m pointsranker backfill` (first time only), then `python -m pointsranker publish`.
 
 To use a custom domain instead, add it to the `pointsranker` Worker in the Cloudflare dashboard
-(Workers & Pages → pointsranker → Settings → Domains & Routes).
+(Workers & Pages → pointsranker → Settings → Domains & Routes), and pass `--base-url https://your.domain`
+to `build`/`publish`/`run` so link previews (Discord etc.) point at it.
 
 ## Tournament weekends
 

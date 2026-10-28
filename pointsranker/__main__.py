@@ -24,6 +24,8 @@ def main() -> None:
     p.add_argument("--names", type=Path, default=Path("tournaments.json"),
                    help='JSON {"YYYY-MM-DD": "Tournament name"} keyed by tournament start date')
     p.add_argument("--site", type=Path, default=Path("site"), help="static site output directory")
+    p.add_argument("--base-url", default=web.SITE_URL,
+                   help="public site URL, for absolute links in link previews (Discord etc.)")
     sv = sub.add_parser("serve", help="run the rankings website locally")
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
@@ -40,11 +42,11 @@ def main() -> None:
     if args.cmd == "serve":
         web.serve(args.db, args.host, args.port, names)
     elif args.cmd == "build":
-        print(f"wrote {site.build(args.db, args.site, names)} files to {args.site}")
+        print(f"wrote {site.build(args.db, args.site, names, args.base_url)} files to {args.site}")
     elif args.cmd == "publish":
-        site.publish(args.db, args.site, names)
+        site.publish(args.db, args.site, names, args.base_url)
     elif args.cmd == "run":
-        publisher = site.Publisher(args.db, args.site, names) if args.publish else None
+        publisher = site.Publisher(args.db, args.site, names, args.base_url) if args.publish else None
         collector.run(conn, args.channel, overrides, publisher)
     elif args.cmd == "backfill":
         n = collector.backfill(conn, args.channel, overrides, args.since)

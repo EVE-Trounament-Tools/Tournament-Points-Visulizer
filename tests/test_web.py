@@ -46,5 +46,29 @@ class SortableTableTest(unittest.TestCase):
         self.assertIn('data-points_won="0"', b)
 
 
+class LinkPreviewTest(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(Path(tempfile.mkdtemp()) / "t.db")
+        self.odd = 'Quote "Team" <b>'
+        for team in (self.odd, "B"):
+            db.save_team(self.conn, team, None, None, None, b"", True)
+        p = pred("m1", "2026-09-13T21:00:00Z", (self.odd, 300), ("B", 100), winner=0)
+        db.upsert_prediction(self.conn, "chan", p, {o["id"]: o["title"] for o in p["outcomes"]}, snapshot=False)
+
+    def meta(self, path):
+        html = web.render(self.conn, path, {}, "https://example.com/").body.decode()
+        head = html.split("</head>")[0]
+        self.assertNotIn("<b>", head)
+        return {k: v for k, v in re.findall(r'<meta (?:property|name)="([^"]+)" content="([^"]*)">', head)}
+
+    def test_preview_names_leader_and_uses_absolute_urls(self):
+        for path in ("/t/all/perceived/", "/t/all/matches/"):
+            m = self.meta(path)
+            self.assertEqual(m["og:url"], "https://example.com" + path)
+            self.assertIn("&quot;Team&quot; &lt;b&gt;", m["og:description"])
+            self.assertEqual(m["og:image"], f"https://example.com/logo/{web.logo_slug(self.odd)}.png")
+        self.assertEqual(self.meta("/t/all/bet/")["og:title"], "All time · Points bet")
+
+
 if __name__ == "__main__":
     unittest.main()
