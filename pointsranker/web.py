@@ -1,5 +1,6 @@
 """Local rankings website: stdlib HTTP server rendering pages straight from the DB."""
 import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
 from . import rankings
@@ -56,7 +58,99 @@ td.rank{color:var(--muted);width:1%}
 .w{color:var(--win)}.l{color:var(--loss)}
 .badge{font-size:11px;padding:2px 7px;border-radius:999px;background:var(--accent-bg);color:var(--accent);font-weight:600}
 .empty{padding:24px;color:var(--muted)}
+.sorter{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 0 10px;font-size:13px}
+.sorter[hidden]{display:none}
+.sorter .lbl{color:var(--muted)}
+.sorter .lvl{display:inline-flex;align-items:center;gap:2px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:2px}
+.sorter select{font:inherit;border:0;background:var(--card);color:var(--fg);padding:3px 4px;max-width:46vw}
+.sorter button{font:inherit;border:0;background:var(--chip);color:var(--fg);border-radius:6px;padding:3px 8px;cursor:pointer;white-space:nowrap}
+.sorter button.rm{background:transparent;color:var(--muted);padding:3px 6px}
+.sorter button.add{background:transparent;border:1px dashed var(--line);color:var(--accent)}
+.sorter button.reset{background:transparent;color:var(--muted);text-decoration:underline}
 """
+
+# Client-side multi-level sorting for ranking tables. The sort lives in the URL hash
+# (#sort=elo:d,points_bet:a) so sorted views can be shared, and is carried over to links
+# for the same view (other tournaments/stages) but not to views with different metrics.
+SORT_JS = r"""(() => {
+const table = document.querySelector("table.sortable"), box = document.querySelector(".sorter");
+const metrics = JSON.parse(document.getElementById("metrics").textContent);
+const byKey = Object.fromEntries(metrics.map(m => [m.key, m]));
+const view = table.dataset.view, def = table.dataset.default;
+const parse = str => (str || "").split(",").map(x => x.split(":"))
+  .filter(([k], i, all) => byKey[k] && all.findIndex(([j]) => j === k) === i)
+  .map(([key, d]) => ({key, dir: d === "a" ? "a" : "d"}));
+const fromHash = (location.hash.match(/sort=([^&]*)/) || [])[1];
+let state = parse(fromHash && decodeURIComponent(fromHash));
+if (!state.length) state = parse(def);
+const enc = () => state.map(s => s.key + ":" + s.dir).join(",");
+const get = (tr, k) => tr.getAttribute("data-" + k);
+function cmp(a, b) {
+  for (const {key, dir} of state) {
+    const x = get(a, key), y = get(b, key);
+    let c;
+    if (key === "team") c = x.localeCompare(y);
+    else if (x === "" || y === "") { if (x !== y) return x === "" ? 1 : -1; continue; }
+    else c = parseFloat(x) - parseFloat(y);
+    if (c) return dir === "a" ? c : -c;
+  }
+  return get(a, "team").localeCompare(get(b, "team"));
+}
+function el(tag, props, text) {
+  const e = Object.assign(document.createElement(tag), props);
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function apply() {
+  const body = table.tBodies[0];
+  [...body.rows].sort(cmp).forEach((r, i) => { r.cells[0].textContent = i + 1; body.appendChild(r); });
+  const hash = enc() === def ? "" : "#sort=" + enc();
+  history.replaceState(null, "", location.pathname + location.search + hash);
+  const keep = u => (u = u.split("#")[0], u.endsWith("/" + view + "/") ? u + hash : u);
+  document.querySelectorAll('a[href^="/t/"]').forEach(a => a.setAttribute("href", keep(a.getAttribute("href"))));
+  document.querySelectorAll("header select option").forEach(o => { o.value = keep(o.value); });
+  render();
+}
+function render() {
+  box.replaceChildren(el("span", {className: "lbl"}, "Sort by"));
+  state.forEach((s, i) => {
+    if (i) box.append(el("span", {className: "lbl"}, "then"));
+    const lvl = el("span", {className: "lvl"});
+    const sel = el("select", {ariaLabel: "Sort level " + (i + 1)});
+    for (const m of metrics) {
+      const o = new Option(m.label, m.key, false, m.key === s.key);
+      o.disabled = m.key !== s.key && state.some(x => x.key === m.key);
+      sel.append(o);
+    }
+    sel.onchange = () => { s.key = sel.value; s.dir = byKey[s.key].dir; apply(); };
+    const team = s.key === "team", down = s.dir === "d";
+    const dir = el("button", {type: "button", className: "dir",
+      title: team ? (down ? "Z to A" : "A to Z") : (down ? "Highest first" : "Lowest first")},
+      team ? (down ? "Z→A" : "A→Z") : (down ? "↓ high" : "↑ low"));
+    dir.onclick = () => { s.dir = down ? "a" : "d"; apply(); };
+    lvl.append(sel, dir);
+    if (i) {
+      const rm = el("button", {type: "button", className: "rm", title: "Remove", ariaLabel: "Remove sort level"}, "×");
+      rm.onclick = () => { state.splice(i, 1); apply(); };
+      lvl.append(rm);
+    }
+    box.append(lvl);
+  });
+  const free = metrics.find(m => !state.some(s => s.key === m.key));
+  if (free) {
+    const add = el("button", {type: "button", className: "add"}, "+ Then by");
+    add.onclick = () => { state.push({key: free.key, dir: free.dir}); apply(); };
+    box.append(add);
+  }
+  if (enc() !== def) {
+    const reset = el("button", {type: "button", className: "reset"}, "Reset");
+    reset.onclick = () => { state = parse(def); apply(); };
+    box.append(reset);
+  }
+  box.hidden = false;
+}
+apply();
+})();"""
 
 
 def _fmt(n: float) -> str:
@@ -89,30 +183,93 @@ def _summary(matches: list[rankings.Match]) -> str:
         f'<div class="stat"><b>{v}</b><span>{k}</span></div>' for v, k in items) + "</div>"
 
 
+@dataclass
+class Metric:
+    key: str
+    label: str
+    value: Callable[[rankings.Stats], float | None]  # sort value; None = n/a
+    desc: bool = True                                  # default sort direction
+
+
+@dataclass
+class Column:
+    label: str
+    show: Callable[[rankings.Stats], str]
+
+
+def _per(total: float, n: int) -> float | None:
+    return total / n if n else None
+
+
+TEAM = Metric("team", "Team", lambda s: None, desc=False)  # sorted by name, see _row_attrs
+METRICS: dict[str, list[Metric]] = {
+    "perceived": [Metric("p_wins", "Perceived wins", lambda s: s.p_wins),
+                  Metric("p_losses", "Perceived losses", lambda s: s.p_losses, desc=False),
+                  Metric("p_pct", "Win %", lambda s: s.p_win_pct),
+                  Metric("elo", "Elo", lambda s: s.elo),
+                  Metric("share", "Avg share", lambda s: s.avg_share),
+                  Metric("wins", "Actual wins", lambda s: s.wins),
+                  Metric("losses", "Actual losses", lambda s: s.losses, desc=False),
+                  Metric("matches", "Matches", lambda s: s.matches)],
+    "bet": [Metric("points_bet", "Points bet", lambda s: s.points_bet),
+            Metric("bettors", "Bettors", lambda s: s.users_bet),
+            Metric("matches", "Matches", lambda s: s.matches),
+            Metric("bet_avg", "Avg / match", lambda s: _per(s.points_bet, s.matches))],
+    "won": [Metric("points_won", "Points won", lambda s: s.points_won),
+            Metric("wins", "Actual wins", lambda s: s.wins),
+            Metric("won_avg", "Avg / win", lambda s: _per(s.points_won, s.wins))],
+    "lost": [Metric("points_lost", "Points lost", lambda s: s.points_lost),
+             Metric("losses", "Actual losses", lambda s: s.losses),
+             Metric("lost_avg", "Avg / loss", lambda s: _per(s.points_lost, s.losses))],
+}
+COLUMNS: dict[str, list[Column]] = {
+    "perceived": [Column("Perceived W-L", lambda s: f"{s.p_wins}-{s.p_losses}"),
+                  Column("Win %", lambda s: f"{s.p_win_pct:.0%}"),
+                  Column("Elo", lambda s: _fmt(s.elo)),
+                  Column("Avg share", lambda s: f"{s.avg_share:.0%}"),
+                  Column("Actual W-L", lambda s: f"{s.wins}-{s.losses}")],
+    "bet": [Column("Points bet", lambda s: _fmt(s.points_bet)),
+            Column("Bettors", lambda s: _fmt(s.users_bet)),
+            Column("Matches", lambda s: str(s.matches)),
+            Column("Avg / match", lambda s: _fmt(s.points_bet / s.matches))],
+    "won": [Column("Points won", lambda s: _fmt(s.points_won)),
+            Column("Actual wins", lambda s: str(s.wins)),
+            Column("Avg / win", lambda s: _fmt(s.points_won / s.wins) if s.wins else "–")],
+    "lost": [Column("Points lost", lambda s: _fmt(s.points_lost)),
+             Column("Actual losses", lambda s: str(s.losses)),
+             Column("Avg / loss", lambda s: _fmt(s.points_lost / s.losses) if s.losses else "–")],
+}
+# Mirrors rankings.VIEWS, which gives the server-side (no-JS) order.
+DEFAULT_SORT = {
+    "perceived": "p_wins:d,p_pct:d,elo:d",
+    "bet": "points_bet:d",
+    "won": "points_won:d",
+    "lost": "points_lost:d",
+}
+
+
+def _row_attrs(s: rankings.Stats, metrics: list[Metric]) -> str:
+    def raw(v):
+        return "" if v is None else repr(round(v, 6)) if isinstance(v, float) else str(v)
+    attrs = [f'data-team="{escape(s.team.lower())}"']
+    attrs += [f'data-{m.key}="{raw(m.value(s))}"' for m in metrics]
+    return " ".join(attrs)
+
+
 def _ranking_table(stats: dict[str, rankings.Stats], view: str) -> str:
-    cols = {
-        "perceived": [("Perceived W-L", lambda s: f"{s.p_wins}-{s.p_losses}"),
-                      ("Win %", lambda s: f"{s.p_win_pct:.0%}"),
-                      ("Elo", lambda s: _fmt(s.elo)),
-                      ("Avg share", lambda s: f"{s.avg_share:.0%}"),
-                      ("Actual W-L", lambda s: f"{s.wins}-{s.losses}")],
-        "bet": [("Points bet", lambda s: _fmt(s.points_bet)),
-                ("Bettors", lambda s: _fmt(s.users_bet)),
-                ("Matches", lambda s: s.matches),
-                ("Avg / match", lambda s: _fmt(s.points_bet / s.matches))],
-        "won": [("Points won", lambda s: _fmt(s.points_won)),
-                ("Actual wins", lambda s: s.wins),
-                ("Avg / win", lambda s: _fmt(s.points_won / s.wins) if s.wins else "–")],
-        "lost": [("Points lost", lambda s: _fmt(s.points_lost)),
-                 ("Actual losses", lambda s: s.losses),
-                 ("Avg / loss", lambda s: _fmt(s.points_lost / s.losses) if s.losses else "–")],
-    }[view]
-    head = '<tr><th class="n">#</th><th>Team</th>' + "".join(f'<th class="n">{c}</th>' for c, _ in cols) + "</tr>"
+    metrics, cols = METRICS[view], COLUMNS[view]
+    spec = json.dumps([{"key": m.key, "label": m.label, "dir": "d" if m.desc else "a"}
+                       for m in [*metrics, TEAM]])
+    head = '<tr><th class="n">#</th><th>Team</th>' + "".join(f'<th class="n">{c.label}</th>' for c in cols) + "</tr>"
     rows = []
     for i, s in enumerate(rankings.ranked(stats, view), 1):
-        rows.append(f'<tr><td class="n rank">{i}</td><td>{_team(s.team)}</td>'
-                    + "".join(f'<td class="n">{f(s)}</td>' for _, f in cols) + "</tr>")
-    return f'<div class="card"><table>{head}{"".join(rows)}</table></div>'
+        rows.append(f'<tr {_row_attrs(s, metrics)}><td class="n rank">{i}</td><td>{_team(s.team)}</td>'
+                    + "".join(f'<td class="n">{c.show(s)}</td>' for c in cols) + "</tr>")
+    return (f'<div class="sorter" hidden></div>'
+            f'<script type="application/json" id="metrics">{spec}</script>'
+            f'<div class="card"><table class="sortable" data-view="{view}" data-default="{DEFAULT_SORT[view]}">'
+            f'<thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+            f'<script>{SORT_JS}</script>')
 
 
 def _matches_table(matches: list[rankings.Match]) -> str:
