@@ -378,8 +378,8 @@ def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], s
     title = (tour.label + (f" · {stage.label}" if stage else "")) if tour else "All time"
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>pointsRanker · {escape(title)}</title><style>{CSS}</style></head><body><main>
-<header><div><h1><a href="/">pointsRanker</a></h1><div class="sub">Team rankings from Twitch channel-point predictions</div></div>
+<title>Twitch Points Ranker · {escape(title)}</title><style>{CSS}</style></head><body><main>
+<header><div><h1><a href="/">Twitch Points Ranker</a></h1><div class="sub">Team rankings from Twitch channel-point predictions</div></div>
 <select onchange="location=this.value" aria-label="Tournament">{select}</select></header>
 <noscript><details class="tours"><summary>Tournaments</summary><ul>{links}</ul></details></noscript>
 {stages}<nav>{tabs}</nav>{_summary(scoped)}<p class="note">{NOTES[view]}</p>{body}
@@ -424,7 +424,7 @@ def render(conn: sqlite3.Connection, path: str, names: dict) -> Response | None:
 
 def not_found_page() -> bytes:
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
-            f'content="width=device-width,initial-scale=1"><title>pointsRanker · Not found</title>'
+            f'content="width=device-width,initial-scale=1"><title>Twitch Points Ranker · Not found</title>'
             f'<style>{CSS}</style></head><body><main><h1>Not found</h1>'
             f'<p class="note">That page doesn\'t exist. <a href="/">Back to the rankings</a>.</p>'
             f'{FOOTER}</main></body></html>').encode()
