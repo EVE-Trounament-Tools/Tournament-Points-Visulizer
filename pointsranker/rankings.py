@@ -108,6 +108,11 @@ class Stats:
         return self.win_pct - self.p_win_pct
 
     @property
+    def lost_pct(self) -> float | None:
+        """Share of all points bet on the team that its backers lost."""
+        return self.points_lost / self.points_bet if self.points_bet else None
+
+    @property
     def avg_share(self) -> float:
         return self.share_sum / self.matches if self.matches else 0.0
 

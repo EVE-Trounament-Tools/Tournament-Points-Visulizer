@@ -310,6 +310,10 @@ def _per(total: float, n: int) -> float | None:
     return total / n if n else None
 
 
+def _lost_pct(s: rankings.Stats) -> str:
+    return f"{s.lost_pct:.0%}" if s.lost_pct is not None else "–"
+
+
 TEAM = Metric("team", "Team", lambda s: None, desc=False, text=True)  # sorted by name, see _row_attrs
 METRICS: dict[str, list[Metric]] = {
     "perceived": [Metric("p_wins", "Perceived wins", lambda s: s.p_wins),
@@ -323,13 +327,15 @@ METRICS: dict[str, list[Metric]] = {
     "bet": [Metric("points_bet", "Points bet", lambda s: s.points_bet),
             Metric("bettors", "Bettors", lambda s: s.users_bet),
             Metric("matches", "Matches", lambda s: s.matches),
-            Metric("bet_avg", "Avg / match", lambda s: _per(s.points_bet, s.matches))],
+            Metric("bet_avg", "Avg / match", lambda s: _per(s.points_bet, s.matches)),
+            Metric("lost_pct", "% lost", lambda s: s.lost_pct, fmt="pct")],
     "won": [Metric("points_won", "Points won", lambda s: s.points_won),
             Metric("wins", "Actual wins", lambda s: s.wins),
             Metric("won_avg", "Avg / win", lambda s: _per(s.points_won, s.wins))],
     "lost": [Metric("points_lost", "Points lost", lambda s: s.points_lost),
              Metric("losses", "Actual losses", lambda s: s.losses),
-             Metric("lost_avg", "Avg / loss", lambda s: _per(s.points_lost, s.losses))],
+             Metric("lost_avg", "Avg / loss", lambda s: _per(s.points_lost, s.losses)),
+             Metric("lost_pct", "% lost", lambda s: s.lost_pct, fmt="pct")],
     "loyal": [Metric("roi", "ROI", lambda s: s.roi if s.bets else None, fmt="pct"),
               Metric("profit", "Profit", lambda s: s.bet_profit if s.bets else None),
               Metric("bets", "Bets", lambda s: s.bets),
@@ -352,13 +358,15 @@ COLUMNS: dict[str, list[Column]] = {
     "bet": [Column("Points bet", lambda s: _fmt(s.points_bet)),
             Column("Bettors", lambda s: _fmt(s.users_bet)),
             Column("Matches", lambda s: str(s.matches)),
-            Column("Avg / match", lambda s: _fmt(s.points_bet / s.matches))],
+            Column("Avg / match", lambda s: _fmt(s.points_bet / s.matches)),
+            Column("% lost", _lost_pct)],
     "won": [Column("Points won", lambda s: _fmt(s.points_won)),
             Column("Actual wins", lambda s: str(s.wins)),
             Column("Avg / win", lambda s: _fmt(s.points_won / s.wins) if s.wins else "–")],
     "lost": [Column("Points lost", lambda s: _fmt(s.points_lost)),
              Column("Actual losses", lambda s: str(s.losses)),
-             Column("Avg / loss", lambda s: _fmt(s.points_lost / s.losses) if s.losses else "–")],
+             Column("Avg / loss", lambda s: _fmt(s.points_lost / s.losses) if s.losses else "–"),
+             Column("% lost", _lost_pct)],
     "loyal": [Column("Bets", lambda s: str(s.bets)),
               Column("W-L", lambda s: f"{s.wins}-{s.losses}"),
               Column("Upset wins", lambda s: str(s.upset_wins)),
@@ -469,9 +477,11 @@ NOTES = {
     "perceived": "A team gets a perceived win when chat bet more channel points on it than on its "
                  "opponent, whatever the real result. Elo runs over those perceived results in match order, "
                  "across every tournament, so it's each team's all-time rating.",
-    "bet": "Total channel points bet on the team across its matches.",
+    "bet": "Total channel points bet on the team across its matches. % lost is the share of those "
+           "points its backers lost.",
     "won": "Points the team's backers took from the opposing pool when the team actually won.",
-    "lost": "Points the team's backers lost when the team actually lost.",
+    "lost": "Points the team's backers lost when the team actually lost. % lost is that as a share of "
+            "all points bet on the team.",
     "loyal": f"Profit from betting {rankings.STAKE:,} points on this team in every match it played. "
              f"Wins pay out at the match's real odds (upsets pay big, heavy-favourite wins pay little); "
              f"every loss costs the full {rankings.STAKE:,}.",
