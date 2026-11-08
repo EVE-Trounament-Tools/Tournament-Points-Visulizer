@@ -7,7 +7,10 @@ Online Alliance Tournament streams) into SQLite, and publishes a website that ra
   whatever the real result. Perceived W-L plus an Elo rating over those results.
 - **Points bet / won / lost**: total points bet on a team; points its backers took from the
   opposing pool when it won; points its backers lost when it lost.
-- **Matches**: every match with both pools, the favourite and upsets.
+- **Tossups**: matches where the two pools' shares were under 5 percentage points apart, so chat
+  had no real favourite. They get their own page and don't count as upsets or perceived results
+  (Elo scores them as draws). Points and actual results still count.
+- **Matches**: every match with both pools, the favourite, upsets and tossups.
 
 Rankings are per tournament and all-time. Matches split into stages wherever there's a break
 of more than 14 days. A stage that starts within 75 days of the previous one's end joins it as
@@ -57,6 +60,21 @@ One-time setup:
 To use a custom domain instead, add it to the `pointsranker` Worker in the Cloudflare dashboard
 (Workers & Pages → pointsranker → Settings → Domains & Routes), and pass `--base-url https://your.domain`
 to `build`/`publish`/`run` so link previews (Discord etc.) point at it.
+
+### Self-hosting
+
+Any web server can serve `site/`. To host it below a domain's root, give `--base-url` that
+path and every link is prefixed with it. To keep the site current without Cloudflare, run the
+collector with `--rebuild`, which rebuilds `site/` when a prediction resolves but doesn't deploy.
+`--site` and `--base-url` go before the command:
+
+```sh
+python -m pointsranker --base-url http://10.0.0.208/tournament-bets build
+python -m pointsranker --base-url http://10.0.0.208/tournament-bets run --rebuild
+```
+
+`deploy.sh` copies the code to a server over SSH (to `/opt/pointsRanker`, default host
+`phone-root`), leaving the server's `data/` and `site/` alone.
 
 ## Tournament weekends
 

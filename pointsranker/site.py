@@ -38,7 +38,7 @@ def build(db_path: Path, out: Path, names: dict, base_url: str = web.SITE_URL) -
             f = _file_for(tmp, path)
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(r.body)
-        (tmp / "404.html").write_bytes(web.not_found_page())
+        (tmp / "404.html").write_bytes(web.not_found_page(base_url))
         old = out.with_name(out.name + ".old")
         if out.exists():
             out.rename(old)
@@ -66,10 +66,13 @@ def publish(db_path: Path, out: Path, names: dict, base_url: str = web.SITE_URL)
 
 class Publisher:
     """Background publisher for the collector: `request()` is cheap and never blocks;
-    deploys run on their own thread, at most once per PUBLISH_INTERVAL."""
+    rebuilds run on their own thread, at most once per PUBLISH_INTERVAL. With deploy=False the
+    site is only rebuilt into `out` (for self-hosting), not deployed to Cloudflare."""
 
-    def __init__(self, db_path: Path, out: Path, names: dict, base_url: str = web.SITE_URL):
+    def __init__(self, db_path: Path, out: Path, names: dict, base_url: str = web.SITE_URL,
+                 deploy: bool = True):
         self.args = (db_path, out, names, base_url)
+        self.deploy = deploy
         self.wanted = threading.Event()
         self.stopping = threading.Event()
         self.thread = threading.Thread(target=self._loop, name="publisher", daemon=True)
@@ -95,6 +98,9 @@ class Publisher:
             self.wanted.clear()
             last = time.monotonic()
             try:
-                publish(*self.args)
+                if self.deploy:
+                    publish(*self.args)
+                else:
+                    log.info("rebuilt %d files into %s", build(*self.args), self.args[1])
             except Exception as e:  # keep collecting; the next resolved prediction retries
                 log.error("publish failed: %s", e)

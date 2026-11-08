@@ -14,8 +14,11 @@ def main() -> None:
                    help='JSON {"Team Name": alliance_id} for names ESI can\'t resolve')
     sub = p.add_subparsers(dest="cmd", required=True)
     rn = sub.add_parser("run", help="poll the channel and record predictions live")
-    rn.add_argument("--publish", action="store_true",
-                    help="rebuild and deploy the site whenever a prediction resolves")
+    rn_pub = rn.add_mutually_exclusive_group()
+    rn_pub.add_argument("--publish", action="store_true",
+                        help="rebuild and deploy the site whenever a prediction resolves")
+    rn_pub.add_argument("--rebuild", action="store_true",
+                        help="rebuild the site into --site whenever a prediction resolves, without deploying")
     bf = sub.add_parser("backfill", help="import the channel's resolved prediction history")
     bf.add_argument("--since", help="stop at predictions created before this date (YYYY-MM-DD)")
     tm = sub.add_parser("teams", help="list teams and their EVE resolution")
@@ -46,7 +49,8 @@ def main() -> None:
     elif args.cmd == "publish":
         site.publish(args.db, args.site, names, args.base_url)
     elif args.cmd == "run":
-        publisher = site.Publisher(args.db, args.site, names, args.base_url) if args.publish else None
+        publisher = (site.Publisher(args.db, args.site, names, args.base_url, deploy=args.publish)
+                     if args.publish or args.rebuild else None)
         collector.run(conn, args.channel, overrides, publisher)
     elif args.cmd == "backfill":
         n = collector.backfill(conn, args.channel, overrides, args.since)

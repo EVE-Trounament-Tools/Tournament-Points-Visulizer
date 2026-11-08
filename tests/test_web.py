@@ -14,7 +14,8 @@ class SortableTableTest(unittest.TestCase):
         for team in ("A", "B", "C"):
             db.save_team(self.conn, team, None, None, None, b"", True)
         for p in (pred("m1", "2026-09-13T21:00:00Z", ("A", 300), ("B", 100), winner=0),
-                  pred("m2", "2026-09-13T22:00:00Z", ("C", 50), ("B", 400), winner=0)):
+                  pred("m2", "2026-09-13T22:00:00Z", ("C", 50), ("B", 400), winner=0),
+                  pred("m3", "2026-09-13T23:00:00Z", ("A", 505), ("C", 495), winner=1)):
             db.upsert_prediction(self.conn, "chan", p, {o["id"]: o["title"] for o in p["outcomes"]},
                                  snapshot=False)
 
@@ -25,8 +26,10 @@ class SortableTableTest(unittest.TestCase):
         return re.findall(r"<tr (data-team[^>]*)>", html)
 
     def test_rows_carry_every_metric_in_default_order(self):
-        stats = rankings.team_stats(rankings.load_matches(self.conn))
+        matches = rankings.load_matches(self.conn)
         for view in web.METRICS:
+            scoped = [m for m in matches if m.tossup] if view == "tossups" else matches
+            stats = rankings.team_stats(scoped, matches)
             html = self.page(view)
             spec = json.loads(re.search(r'id="metrics">(.*?)</script>', html).group(1))
             self.assertEqual([m["key"] for m in spec if m["sort"]], [m.key for m in web.METRICS[view]] + ["team"])
@@ -44,6 +47,30 @@ class SortableTableTest(unittest.TestCase):
         b = next(r for r in rows if 'data-team="b"' in r)  # B never won
         self.assertIn('data-won_avg=""', b)
         self.assertIn('data-points_won="0"', b)
+
+    def test_tossups_page(self):
+        html = self.page("tossups")
+        self.assertIn("<h2>Tossup matches</h2>", html)
+        self.assertIn('<b>1</b><span>tossups</span>', html)
+        self.assertIn('<b>33%</b><span>of all matches</span>', html)
+        self.assertIn('<b>0%</b><span>won by the bigger pool</span>', html)  # A led, C won
+        self.assertIn("1.0 pts", html)
+        self.assertEqual(len(self.rows(html)), 2)    # only A and C played a tossup
+        self.assertEqual(html.count('class="sortable"'), 1)
+
+    def test_tossups_page_empty(self):
+        self.conn.execute("DELETE FROM outcomes WHERE prediction_id = 'm3'")
+        self.conn.execute("DELETE FROM predictions WHERE id = 'm3'")
+        html = self.page("tossups")
+        self.assertIn("No tossups here.", html)
+        self.assertNotIn('id="metrics"', html)
+
+    def test_matches_page_badges_and_upset_rate(self):
+        html = self.page("matches")
+        self.assertEqual(html.count("<span class=badge>tossup</span>"), 1)
+        self.assertEqual(html.count("<span class=badge>upset</span>"), 1)   # m2 only
+        self.assertIn('<b>50%</b><span>upsets (crowd got it wrong)</span>', html)  # 1 of 2, tossup excluded
+        self.assertIn('<b>1</b><span>tossups</span>', html)
 
 
 class LinkPreviewTest(unittest.TestCase):
@@ -68,6 +95,37 @@ class LinkPreviewTest(unittest.TestCase):
             self.assertIn("&quot;Team&quot; &lt;b&gt;", m["og:description"])
             self.assertEqual(m["og:image"], f"https://example.com/logo/{web.logo_slug(self.odd)}.png")
         self.assertEqual(self.meta("/t/all/bet/")["og:title"], "All time · Points bet")
+
+
+class BasePathTest(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(Path(tempfile.mkdtemp()) / "t.db")
+        db.save_team(self.conn, "A", None, None, None, b"", True)
+        db.save_team(self.conn, "B", None, None, None, b"", True)
+        p = pred("m1", "2026-09-13T21:00:00Z", ("A", 300), ("B", 100), winner=0)
+        db.upsert_prediction(self.conn, "chan", p, {o["id"]: o["title"] for o in p["outcomes"]}, snapshot=False)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_default_site_has_root_links(self):
+        html = web.render(self.conn, "/t/all/perceived/", {}).body.decode()
+        self.assertIn('<a href="/">', html)
+        self.assertIn('src="/logo/', html)
+        self.assertIn('a[href^="/t/"]', html)
+
+    def test_base_url_path_prefixes_links_and_preview_urls(self):
+        html = web.render(self.conn, "/t/all/perceived/", {}, "http://host/tournament-bets").body.decode()
+        self.assertIn('<a href="/tournament-bets/">', html)
+        self.assertIn('src="/tournament-bets/logo/', html)
+        self.assertIn('value="/tournament-bets/t/all/perceived/"', html)
+        self.assertIn('a[href^="/tournament-bets/t/"]', html)
+        self.assertNotRegex(html, r'(?:href|src|value)="/(?!tournament-bets/)')
+        self.assertIn('content="http://host/tournament-bets/t/all/perceived/"', html)
+
+    def test_not_found_page_prefix(self):
+        self.assertIn(b'href="/"', web.not_found_page())
+        self.assertIn(b'href="/tournament-bets/"', web.not_found_page("http://host/tournament-bets"))
 
 
 if __name__ == "__main__":

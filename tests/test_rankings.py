@@ -44,6 +44,40 @@ class RankingsTest(unittest.TestCase):
         self.assertEqual(stats["A"].p_wins + stats["A"].p_losses, 0)
         self.assertAlmostEqual(stats["A"].elo, rankings.ELO_START)
 
+    def test_tossup_boundary(self):
+        self.add(pred("close", "2026-09-13T21:00:00Z", ("A", 520), ("B", 480), winner=1))
+        self.add(pred("edge", "2026-09-13T22:00:00Z", ("A", 525), ("B", 475), winner=1))
+        close, edge = rankings.load_matches(self.conn)
+        self.assertTrue(close.tossup)
+        self.assertIsNone(close.perceived_winner)
+        self.assertEqual(close.pool_leader, "A")
+        self.assertFalse(close.upset)                # the bigger pool lost, but it's a tossup
+        self.assertFalse(edge.tossup)                # exactly 5 points apart is a real call
+        self.assertEqual(edge.perceived_winner, "A")
+        self.assertTrue(edge.upset)
+
+    def test_tossup_excluded_from_crowd_stats_but_not_real_results(self):
+        self.add(pred("m1", "2026-09-13T21:00:00Z", ("A", 300), ("B", 100), winner=0))
+        self.add(pred("m2", "2026-09-13T22:00:00Z", ("A", 510), ("B", 490), winner=1))
+        stats = rankings.team_stats(rankings.load_matches(self.conn))
+        a, b = stats["A"], stats["B"]
+        self.assertEqual((a.p_wins, a.p_losses, b.p_wins, b.p_losses), (1, 0, 0, 1))
+        self.assertEqual(b.upset_wins, 0)
+        self.assertEqual((a.wins, a.losses, b.wins, b.losses), (1, 1, 1, 1))  # real results count
+        self.assertEqual((b.points_won, a.points_lost), (510, 510))
+        self.assertEqual((a.bets, b.bets), (2, 2))
+        self.assertAlmostEqual(a.win_pct, 0.5)
+        self.assertEqual(a.called_win_pct, 1.0)      # the tossup loss doesn't make A "overrated"
+        self.assertEqual(a.underrated, 0.0)
+
+    def test_tossup_is_a_draw_for_elo(self):
+        self.add(pred("m1", "2026-09-13T21:00:00Z", ("A", 300), ("B", 100), winner=0))
+        self.add(pred("m2", "2026-09-13T22:00:00Z", ("A", 510), ("B", 490), winner=0))
+        matches = rankings.load_matches(self.conn)
+        before, after = rankings.elo_ratings(matches[:1]), rankings.elo_ratings(matches)
+        self.assertLess(after["A"], before["A"])     # the higher-rated team drew
+        self.assertGreater(after["A"], rankings.ELO_START)
+
     def test_elo_is_all_time(self):
         self.add(pred("m1", "2025-10-24T12:00:00Z", ("A", 300), ("B", 100), 0))  # earlier tournament
         self.add(pred("m2", "2026-08-29T12:00:00Z", ("A", 100), ("C", 300), 1))

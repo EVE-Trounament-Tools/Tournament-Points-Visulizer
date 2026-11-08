@@ -16,6 +16,7 @@ from pathlib import Path
 ELO_START = 1500.0
 ELO_K = 32.0
 STAKE = 1000  # channel points a "loyal bettor" puts on their team every match
+TOSSUP_MARGIN = 0.05  # a gap in pool share below this is too close to count as a crowd call
 STAGE_GAP = timedelta(days=14)    # a longer break between matches starts a new stage
 FINALS_GAP = timedelta(days=75)   # a stage starting within this of the previous one's end belongs
                                   # to the same tournament (feeders -> finals are 1-2 months apart)
@@ -43,10 +44,24 @@ class Match:
         return self.a.points + self.b.points
 
     @property
-    def perceived_winner(self) -> str | None:
+    def margin(self) -> float | None:
+        """Gap between the two sides' shares of the pool; None if nobody bet."""
+        return abs(self.a.points - self.b.points) / self.total if self.total else None
+
+    @property
+    def tossup(self) -> bool:
+        return self.margin is not None and self.margin < TOSSUP_MARGIN
+
+    @property
+    def pool_leader(self) -> str | None:
+        """The team with the bigger pool, however small the lead."""
         if self.a.points == self.b.points:
             return None
         return self.a.team if self.a.points > self.b.points else self.b.team
+
+    @property
+    def perceived_winner(self) -> str | None:
+        return None if self.tossup else self.pool_leader
 
     @property
     def upset(self) -> bool:
@@ -88,7 +103,9 @@ class Stats:
     bets: int = 0          # matches with a result, each backed with STAKE
     bet_profit: float = 0.0
     best_win: float = 0.0  # largest single net payout
-    upset_wins: int = 0    # actual wins with the smaller pool
+    upset_wins: int = 0    # actual wins as the crowd's underdog
+    called_wins: int = 0   # actual results in matches the crowd called (not tossups)
+    called_losses: int = 0
 
     @property
     def p_win_pct(self) -> float:
@@ -101,11 +118,17 @@ class Stats:
         return self.wins / decided if decided else None
 
     @property
+    def called_win_pct(self) -> float | None:
+        decided = self.called_wins + self.called_losses
+        return self.called_wins / decided if decided else None
+
+    @property
     def underrated(self) -> float | None:
-        """How far the actual win rate beats the predicted (perceived) one; negative = overrated."""
-        if self.win_pct is None or not self.p_wins + self.p_losses:
+        """How far the actual win rate beats the predicted (perceived) one, over matches the
+        crowd called; negative = overrated."""
+        if self.called_win_pct is None or not self.p_wins + self.p_losses:
             return None
-        return self.win_pct - self.p_win_pct
+        return self.called_win_pct - self.p_win_pct
 
     @property
     def lost_pct(self) -> float | None:
@@ -285,10 +308,12 @@ def team_stats(matches: list[Match], history: list[Match] | None = None) -> dict
             if m.winner == own.team:
                 s.wins += 1
                 s.points_won += other.points
-                s.upset_wins += own.points < other.points
+                s.upset_wins += m.upset
+                s.called_wins += m.perceived_winner is not None
             elif m.winner == other.team:
                 s.losses += 1
                 s.points_lost += own.points
+                s.called_losses += m.perceived_winner is not None
             if m.winner:
                 net = bet_return(own.points, m.total, m.winner == own.team)
                 s.bets += 1
@@ -314,6 +339,7 @@ VIEWS = {
     "lost": lambda s: (-s.points_lost,),
     "loyal": lambda s: (-s.roi, -s.bet_profit),
     "underrated": lambda s: (s.underrated is None, -(s.underrated or 0), -s.matches),
+    "tossups": lambda s: (-s.wins, s.win_pct is None, -(s.win_pct or 0), -s.matches),
 }
 
 

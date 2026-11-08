@@ -23,6 +23,7 @@ VIEW_LABELS = {
     "lost": "Points lost",
     "loyal": "Loyal bettor",
     "underrated": "Underrated",
+    "tossups": "Tossups",
 }
 
 CSS = """
@@ -33,8 +34,10 @@ CSS = """
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
 main{max-width:1000px;margin:0 auto;padding:24px 16px 48px}
+main.wide{max-width:1400px}
 header{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:end;justify-content:space-between;margin-bottom:18px}
 h1{font-size:22px;margin:0}h1 a{color:inherit;text-decoration:none}
+h2{font-size:16px;margin:22px 0 10px}
 .tours{margin:0 0 12px}.tours ul{margin:6px 0;padding-left:18px}.tours a{color:var(--accent)}
 .sub{color:var(--muted);font-size:13px}
 header select{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg)}
@@ -54,6 +57,9 @@ th,td{padding:8px 12px;text-align:left;white-space:nowrap}
 th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-bottom:1px solid var(--line)}
 tr+tr td{border-top:1px solid var(--line)}
 td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+main.wide th,main.wide td{padding:8px}
+main.wide td.wrap,main.wide .team span{white-space:normal;overflow-wrap:anywhere}
+main.wide td.wrap{min-width:110px}main.wide .team{min-width:130px}
 td.rank{color:var(--muted);width:1%}
 .team{display:flex;align-items:center;gap:10px}
 .team img{width:32px;height:32px;border-radius:6px;flex:none}
@@ -264,14 +270,28 @@ def _team(name: str, bold: bool = False) -> str:
             f'<span{cls}>{escape(name)}</span></span>')
 
 
+def _tiles(items: list[tuple[str, str]]) -> str:
+    return '<div class="summary">' + "".join(
+        f'<div class="stat"><b>{v}</b><span>{k}</span></div>' for v, k in items) + "</div>"
+
+
 def _summary(matches: list[rankings.Match]) -> str:
     total = sum(m.total for m in matches)
     upsets = sum(m.upset for m in matches)
     decided = sum(1 for m in matches if m.winner and m.perceived_winner)
-    items = [(_fmt(len(matches)), "matches"), (_fmt(total), "points wagered"),
-             (f"{upsets / decided:.0%}" if decided else "–", "upsets (crowd got it wrong)")]
-    return '<div class="summary">' + "".join(
-        f'<div class="stat"><b>{v}</b><span>{k}</span></div>' for v, k in items) + "</div>"
+    return _tiles([(_fmt(len(matches)), "matches"), (_fmt(total), "points wagered"),
+                   (f"{upsets / decided:.0%}" if decided else "–", "upsets (crowd got it wrong)"),
+                   (_fmt(sum(m.tossup for m in matches)), "tossups")])
+
+
+def _tossup_summary(matches: list[rankings.Match]) -> str:
+    tossups = [m for m in matches if m.tossup]
+    leaned = [m for m in tossups if m.winner and m.pool_leader]
+    held = sum(m.winner == m.pool_leader for m in leaned)
+    return _tiles([(_fmt(len(tossups)), "tossups"),
+                   (f"{len(tossups) / len(matches):.0%}" if matches else "–", "of all matches"),
+                   (_fmt(sum(m.total for m in tossups)), "points wagered"),
+                   (f"{held / len(leaned):.0%}" if leaned else "–", "won by the bigger pool")])
 
 
 @dataclass
@@ -344,10 +364,17 @@ METRICS: dict[str, list[Metric]] = {
               Metric("upsets", "Upset wins", lambda s: s.upset_wins),
               Metric("best", "Best win", lambda s: s.best_win if s.wins else None)],
     "underrated": [Metric("gap", "Underrated by", lambda s: s.underrated, fmt="pct"),
-                   Metric("win_pct", "Actual win %", lambda s: s.win_pct, fmt="pct"),
+                   Metric("called_pct", "Actual win % (no tossups)", lambda s: s.called_win_pct, fmt="pct"),
                    Metric("p_pct", "Predicted win %", lambda s: s.p_win_pct, fmt="pct"),
                    Metric("upsets", "Upset wins", lambda s: s.upset_wins),
                    Metric("matches", "Matches", lambda s: s.matches)],
+    "tossups": [Metric("wins", "Actual wins", lambda s: s.wins),
+                Metric("losses", "Actual losses", lambda s: s.losses, desc=False),
+                Metric("win_pct", "Actual win %", lambda s: s.win_pct, fmt="pct"),
+                Metric("matches", "Matches", lambda s: s.matches),
+                Metric("points_won", "Points won", lambda s: s.points_won),
+                Metric("points_lost", "Points lost", lambda s: s.points_lost),
+                Metric("roi", "ROI", lambda s: s.roi if s.bets else None, fmt="pct")],
 }
 COLUMNS: dict[str, list[Column]] = {
     "perceived": [Column("Perceived W-L", lambda s: f"{s.p_wins}-{s.p_losses}"),
@@ -373,12 +400,18 @@ COLUMNS: dict[str, list[Column]] = {
               Column("Profit", lambda s: _signed(s.bet_profit, _fmt(abs(s.bet_profit))) if s.bets else "–"),
               Column("ROI", lambda s: _signed(s.roi, f"{abs(s.roi):.0%}") if s.bets else "–"),
               Column("Best win", lambda s: f"+{_fmt(s.best_win)}" if s.wins else "–")],
-    "underrated": [Column("Actual W-L", lambda s: f"{s.wins}-{s.losses}"),
-                   Column("Actual win %", lambda s: f"{s.win_pct:.0%}" if s.win_pct is not None else "–"),
+    "underrated": [Column("Actual W-L", lambda s: f"{s.called_wins}-{s.called_losses}"),
+                   Column("Actual win %", lambda s: f"{s.called_win_pct:.0%}" if s.called_win_pct is not None else "–"),
                    Column("Predicted W-L", lambda s: f"{s.p_wins}-{s.p_losses}"),
                    Column("Predicted win %", lambda s: f"{s.p_win_pct:.0%}" if s.p_wins + s.p_losses else "–"),
                    Column("Underrated by", lambda s: _signed(s.underrated, f"{abs(s.underrated) * 100:.0f} pts")
                           if s.underrated is not None else "–")],
+    "tossups": [Column("Tossups", lambda s: str(s.matches)),
+                Column("W-L", lambda s: f"{s.wins}-{s.losses}"),
+                Column("Win %", lambda s: f"{s.win_pct:.0%}" if s.win_pct is not None else "–"),
+                Column("Points won", lambda s: _fmt(s.points_won)),
+                Column("Points lost", lambda s: _fmt(s.points_lost)),
+                Column("ROI", lambda s: _signed(s.roi, f"{abs(s.roi):.0%}") if s.bets else "–")],
 }
 # Mirrors rankings.VIEWS, which gives the server-side (no-JS) order.
 DEFAULT_SORT = {
@@ -388,6 +421,7 @@ DEFAULT_SORT = {
     "lost": "points_lost:d",
     "loyal": "roi:d,profit:d",
     "underrated": "gap:d,matches:d",
+    "tossups": "wins:d,win_pct:d,matches:d",
 }
 # Every metric, so any view can be filtered on any of them (e.g. matches played on "Points won").
 ALL_METRICS = list({m.key: m for ms in METRICS.values() for m in ms}.values())
@@ -431,6 +465,7 @@ MATCH_METRICS = [
     Metric("fav_share", "Favourite's share", lambda r: max(r[0].a.points, r[0].b.points) / r[0].total
            if r[0].total else 0.5, fmt="pct"),
     Metric("upset", "Upset", lambda r: int(r[0].upset)),
+    Metric("tossup", "Tossup", lambda r: int(r[0].tossup)),
 ]
 EITHER_TEAM = Metric("teams", "Either team", lambda r: f"{r[0].a.team} | {r[0].b.team}".lower(), text=True)
 TOUR_METRIC = Metric("tour", "Tournament", lambda r: int(r[1].tournament.id.replace("-", "")))
@@ -447,20 +482,48 @@ def _matches_table(matches: list[rankings.Match], info: dict[str, rankings.Match
     rows = []
     for seq, m in reversed(list(enumerate(matches))):
         mi, fav = info[m.id], m.perceived_winner
+        badge = "<span class=badge>upset</span>" if m.upset else "<span class=badge>tossup</span>" if m.tossup else ""
         attrs = " ".join([f'data-seq="{seq}"', *(f'data-{x.key}="{escape(str(x.value((m, mi))))}"'
                                                   for x in metrics)])
         rows.append(
             f'<tr {attrs}><td class="n rank">{mi.number}</td>'
-            + (f'<td>{escape(mi.tournament.label)}</td>' if show_tour else "")
+            + (f'<td class="wrap">{escape(mi.tournament.label)}</td>' if show_tour else "")
             + f'<td>{escape(mi.phase or "–")}</td><td>{escape(m.created_at[:10])}</td>'
             f'<td>{_team(m.a.team, fav == m.a.team)}</td><td class="n">{_fmt(m.a.points)}</td>'
             f'<td class="n">{_fmt(m.b.points)}</td><td>{_team(m.b.team, fav == m.b.team)}</td>'
-            f'<td>{escape(m.winner or "–")}</td>'
-            f'<td>{"<span class=badge>upset</span>" if m.upset else ""}</td></tr>')
+            f'<td class="wrap">{escape(m.winner or "–")}</td>'
+            f'<td>{badge}</td></tr>')
     return (f'{SORTER}<script type="application/json" id="metrics">{_spec(metrics, {m.key for m in sortable})}</script>'
             f'<div class="card"><table class="sortable" data-view="matches" data-default="{MATCHES_DEFAULT_SORT}"'
             f' data-tie="seq"><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
             f'<script>{SORT_JS}</script>')
+
+
+def _tossup_matches(tossups: list[rankings.Match], info: dict[str, rankings.MatchInfo],
+                    show_tour: bool) -> str:
+    """Plain newest-first list: the page's sortable table is the team table above it."""
+    head = ('<tr><th class="n">#</th>' + ("<th>Tournament</th>" if show_tour else "")
+            + '<th>Stage</th><th>Date</th><th>Team</th><th class="n">Points</th><th class="n">Points</th>'
+            '<th>Team</th><th>Winner</th><th class="n">Gap</th></tr>')
+    rows = []
+    for m in reversed(tossups):
+        mi = info[m.id]
+        rows.append(
+            f'<tr><td class="n rank">{mi.number}</td>'
+            + (f'<td class="wrap">{escape(mi.tournament.label)}</td>' if show_tour else "")
+            + f'<td>{escape(mi.phase or "–")}</td><td>{escape(m.created_at[:10])}</td>'
+            f'<td>{_team(m.a.team)}</td><td class="n">{_fmt(m.a.points)}</td>'
+            f'<td class="n">{_fmt(m.b.points)}</td><td>{_team(m.b.team)}</td>'
+            f'<td class="wrap">{escape(m.winner or "–")}</td><td class="n">{m.margin * 100:.1f} pts</td></tr>')
+    return f'<h2>Tossup matches</h2><div class="card"><table><thead>{head}</thead><tbody>{"".join(rows)}</tbody></table></div>'
+
+
+def _tossups_body(scoped: list[rankings.Match], history: list[rankings.Match],
+                  info: dict[str, rankings.MatchInfo], show_tour: bool) -> str:
+    tossups = [m for m in scoped if m.tossup]
+    if not tossups:
+        return '<div class="card empty">No tossups here.</div>'
+    return _ranking_table(rankings.team_stats(tossups, history), "tossups") + _tossup_matches(tossups, info, show_tour)
 
 
 @dataclass
@@ -473,10 +536,12 @@ class Response:
 
 PAGE_RE = re.compile(r"^/t/([\w-]+)/(\w+)/?$")
 VIEWS = [*VIEW_LABELS, "matches"]
+WIDE_VIEWS = {"matches", "tossups"}  # views listing matches, whose tables need more room
 NOTES = {
     "perceived": "A team gets a perceived win when chat bet more channel points on it than on its "
-                 "opponent, whatever the real result. Elo runs over those perceived results in match order, "
-                 "across every tournament, so it's each team's all-time rating.",
+                 "opponent, whatever the real result. Tossups give no perceived result and count as a draw "
+                 "for Elo, which runs over perceived results in match order, across every tournament, so "
+                 "it's each team's all-time rating.",
     "bet": "Total channel points bet on the team across its matches. % lost is the share of those "
            "points its backers lost.",
     "won": "Points the team's backers took from the opposing pool when the team actually won.",
@@ -486,10 +551,14 @@ NOTES = {
              f"Wins pay out at the match's real odds (upsets pay big, heavy-favourite wins pay little); "
              f"every loss costs the full {rankings.STAKE:,}.",
     "underrated": "How much better a team actually did than chat expected: its actual win rate minus its "
-                  "predicted win rate (the share of its matches where chat bet more on it). Teams with few "
-                  "matches swing a lot; filter on Matches to hide them.",
+                  "predicted win rate (the share of its matches where chat bet more on it), leaving out "
+                  "tossups. Teams with few matches swing a lot; filter on Matches to hide them.",
+    "tossups": f"Matches where the two sides' shares of the points were under "
+               f"{rankings.TOSSUP_MARGIN * 100:.0f} percentage points apart, so chat had no real favourite. "
+               f"They don't count as upsets or perceived results; points and actual results still count "
+               f"everywhere else. This table covers tossups only.",
     "matches": "Matches are numbered in order within their tournament. Bold team = crowd favourite "
-               "(more points). Upset = favourite lost.",
+               "(more points). Upset = favourite lost. Tossup = pools too close to name a favourite.",
 }
 
 
@@ -528,6 +597,13 @@ def _preview(scoped: list[rankings.Match], history: list[rankings.Match], view: 
     """(description, #1 team) for a page's link preview."""
     if not scoped:
         return "No matches recorded yet.", None
+    if view == "tossups":
+        tossups = [m for m in scoped if m.tossup]
+        if not tossups:
+            return "No tossups here.", None
+        top = rankings.ranked(rankings.team_stats(tossups, history), view)
+        lead = " · ".join(f"{i}. {s.team}" for i, s in enumerate(top[:3], 1))
+        return f"{lead} — {_fmt(len(tossups))} tossups out of {_fmt(len(scoped))} matches", top[0].team
     stats = rankings.team_stats(scoped, history)
     top = rankings.ranked(stats, "perceived" if view == "matches" else view)
     upsets = sum(m.upset for m in scoped)
@@ -540,6 +616,23 @@ def _preview(scoped: list[rankings.Match], history: list[rankings.Match], view: 
     else:
         lead = " · ".join(f"{i}. {s.team}" for i, s in enumerate(top[:3], 1))
     return f"{lead} — {line}", top[0].team
+
+
+_ROOT_ATTR_RE = re.compile(r'\b(href|src|value)="/')
+
+
+def _base_path(base_url: str) -> str:
+    """The path part of base_url ("" for a site at a domain's root), e.g. "/tournament-bets"."""
+    return urlparse(base_url).path.rstrip("/")
+
+
+def _with_base(html: str, base_url: str) -> str:
+    """Prefix the site's root-absolute links with base_url's path, for a site hosted below a domain's root."""
+    prefix = _base_path(base_url)
+    if not prefix:
+        return html
+    html = _ROOT_ATTR_RE.sub(lambda m: f'{m.group(1)}="{prefix}/', html)
+    return html.replace("""a[href^="/t/"]""", f"""a[href^="{prefix}/t/"]""")
 
 
 def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], scope: str, view: str,
@@ -564,21 +657,25 @@ def _page(tours: list[rankings.Tournament], all_matches: list[rankings.Match], s
         body = '<div class="card empty">No matches recorded yet.</div>'
     elif view == "matches":
         body = _matches_table(scoped, rankings.match_info(tours), tour is None)
+    elif view == "tossups":
+        body = _tossups_body(scoped, all_matches, rankings.match_info(tours), tour is None)
     else:
         body = _ranking_table(rankings.team_stats(scoped, all_matches), view)
+    summary = _tossup_summary(scoped) if view == "tossups" else _summary(scoped)
+    main_class = ' class="wide"' if view in WIDE_VIEWS else ""
     title = (tour.label + (f" · {stage.label}" if stage else "")) if tour else "All time"
     desc, leader = _preview(scoped, all_matches, view)
     base = base_url.rstrip("/")
     image = f"{base}/logo/{logo_slug(leader)}.png" if leader else None
     meta = _meta(f"{title} · {dict(VIEW_LABELS, matches='Matches')[view]}", desc, base + path, image)
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+    return _with_base(f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{SITE_NAME} · {escape(title)}</title>{meta}<style>{CSS}</style></head><body><main>
+<title>{SITE_NAME} · {escape(title)}</title>{meta}<style>{CSS}</style></head><body><main{main_class}>
 <header><div><h1><a href="/">{SITE_NAME}</a></h1><div class="sub">Team rankings from Twitch channel-point predictions</div></div>
 <select onchange="location=this.value" aria-label="Tournament">{select}</select></header>
 <noscript><details class="tours"><summary>Tournaments</summary><ul>{links}</ul></details></noscript>
-{stages}<nav>{tabs}</nav>{_summary(scoped)}<p class="note">{NOTES[view]}</p>{body}
-{FOOTER}</main></body></html>"""
+{stages}<nav>{tabs}</nav>{summary}<p class="note">{NOTES[view]}</p>{body}
+{FOOTER}</main></body></html>""", base_url)
 
 
 def _scopes(tours: list[rankings.Tournament]) -> list[str]:
@@ -617,12 +714,12 @@ def render(conn: sqlite3.Connection, path: str, names: dict, base_url: str = SIT
     return Response(200, "text/html; charset=utf-8", _page(tours, matches, t, view, path, base_url).encode())
 
 
-def not_found_page() -> bytes:
-    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
+def not_found_page(base_url: str = SITE_URL) -> bytes:
+    return _with_base(f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
             f'content="width=device-width,initial-scale=1"><title>{SITE_NAME} · Not found</title>'
             f'<meta property="og:site_name" content="{SITE_NAME}"><style>{CSS}</style></head><body><main><h1>Not found</h1>'
             f'<p class="note">That page doesn\'t exist. <a href="/">Back to the rankings</a>.</p>'
-            f'{FOOTER}</main></body></html>').encode()
+            f'{FOOTER}</main></body></html>', base_url).encode()
 
 
 def make_handler(db_path: Path, names: dict, base_url: str = SITE_URL):
@@ -654,7 +751,7 @@ def make_handler(db_path: Path, names: dict, base_url: str = SITE_URL):
             except sqlite3.Error as e:
                 log.exception("request failed")
                 r = Response(500, "text/plain", f"database error: {e}".encode())
-            self._send(r or Response(404, "text/html; charset=utf-8", not_found_page()))
+            self._send(r or Response(404, "text/html; charset=utf-8", not_found_page(base_url)))
 
         def log_message(self, fmt, *args):
             log.debug("%s " + fmt, self.address_string(), *args)
