@@ -58,6 +58,14 @@ class SortableTableTest(unittest.TestCase):
         self.assertEqual(len(self.rows(html)), 2)    # only A and C played a tossup
         self.assertEqual(html.count('class="sortable"'), 1)
 
+    def test_tossup_count_is_labelled_only_on_tossups_page(self):
+        def label(view):
+            spec = json.loads(re.search(r'id="metrics">(.*?)</script>', self.page(view)).group(1))
+            return next(m["label"] for m in spec if m["key"] == "matches")
+        self.assertEqual(label("tossups"), "Tossups")
+        for view in ("perceived", "won", "underrated"):
+            self.assertEqual(label(view), "Matches", view)
+
     def test_tossups_page_empty(self):
         self.conn.execute("DELETE FROM outcomes WHERE prediction_id = 'm3'")
         self.conn.execute("DELETE FROM predictions WHERE id = 'm3'")

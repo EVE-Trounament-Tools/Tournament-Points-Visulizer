@@ -336,6 +336,14 @@ def _lost_pct(s: rankings.Stats) -> str:
 
 TEAM = Metric("team", "Team", lambda s: None, desc=False, text=True)  # sorted by name, see _row_attrs
 METRICS: dict[str, list[Metric]] = {
+    # First, so ALL_METRICS takes shared keys from later views: "Tossups" is only right on this page.
+    "tossups": [Metric("wins", "Actual wins", lambda s: s.wins),
+                Metric("losses", "Actual losses", lambda s: s.losses, desc=False),
+                Metric("win_pct", "Actual win %", lambda s: s.win_pct, fmt="pct"),
+                Metric("matches", "Tossups", lambda s: s.matches),
+                Metric("points_won", "Points won", lambda s: s.points_won),
+                Metric("points_lost", "Points lost", lambda s: s.points_lost),
+                Metric("roi", "ROI", lambda s: s.roi if s.bets else None, fmt="pct")],
     "perceived": [Metric("p_wins", "Perceived wins", lambda s: s.p_wins),
                   Metric("p_losses", "Perceived losses", lambda s: s.p_losses, desc=False),
                   Metric("p_pct", "Win %", lambda s: s.p_win_pct, fmt="pct"),
@@ -368,13 +376,6 @@ METRICS: dict[str, list[Metric]] = {
                    Metric("p_pct", "Predicted win %", lambda s: s.p_win_pct, fmt="pct"),
                    Metric("upsets", "Upset wins", lambda s: s.upset_wins),
                    Metric("matches", "Matches", lambda s: s.matches)],
-    "tossups": [Metric("wins", "Actual wins", lambda s: s.wins),
-                Metric("losses", "Actual losses", lambda s: s.losses, desc=False),
-                Metric("win_pct", "Actual win %", lambda s: s.win_pct, fmt="pct"),
-                Metric("matches", "Matches", lambda s: s.matches),
-                Metric("points_won", "Points won", lambda s: s.points_won),
-                Metric("points_lost", "Points lost", lambda s: s.points_lost),
-                Metric("roi", "ROI", lambda s: s.roi if s.bets else None, fmt="pct")],
 }
 COLUMNS: dict[str, list[Column]] = {
     "perceived": [Column("Perceived W-L", lambda s: f"{s.p_wins}-{s.p_losses}"),
